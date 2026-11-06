@@ -56,7 +56,7 @@ export default function Editor(p: Props) {
       setC({ doc, provider });
       timer = setInterval(async () => {
         const n = await ticket();
-       if (n && provider) (provider as unknown as { url: string }).url = `${provider.url.split('?')[0]}?ticket=${encodeURIComponent(n)}`;
+      if (n && provider) provider.params = { ticket: n };
       }, 120_000);
     })();
     return () => {
