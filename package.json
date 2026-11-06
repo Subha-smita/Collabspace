@@ -1,60 +1,4 @@
-{
-  "name": "collabspace",
-  "private": true,
-  "scripts": {
-  "dev": "next dev",
-  "build": "next build",
-  "start": "next start",
-  "collab": "tsx collaboration-server/server.ts",
-  "collab:local": "tsx --env-file=.env collaboration-server/server.ts",
-  "test:e2e": "tsx --env-file=.env tests/e2e.ts",
-  "postinstall": "prisma generate"
-},
-  "dependencies": {
-    "@prisma/client": "^5.22.0",
-    "@tiptap/extension-collaboration": "^2.10.3",
-    "@tiptap/extension-collaboration-cursor": "^2.10.3",
-    "@tiptap/extension-image": "^2.27.3",
-    "@tiptap/extension-link": "^2.10.3",
-    "@tiptap/extension-placeholder": "^2.27.3",
-    "@tiptap/extension-table": "^2.27.3",
-    "@tiptap/extension-table-cell": "^2.27.3",
-    "@tiptap/extension-table-header": "^2.27.3",
-    "@tiptap/extension-table-row": "^2.27.3",
-    "@tiptap/extension-task-item": "^2.27.3",
-    "@tiptap/extension-task-list": "^2.27.3",
-    "@tiptap/extension-underline": "^2.10.3",
-    "@tiptap/pm": "^2.10.3",
-    "@tiptap/react": "^2.10.3",
-    "@tiptap/starter-kit": "^2.10.3",
-    "bcryptjs": "^2.4.3",
-    "ioredis": "^5.4.1",
-    "jose": "^5.9.6",
-    "lib0": "^0.2.99",
-    "next": "^14.2.18",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "ws": "^8.18.0",
-    "y-prosemirror": "^1.2.12",
-    "y-protocols": "^1.0.6",
-    "y-websocket": "^2.0.4",
-    "yjs": "^13.6.20",
-    "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
-    "@types/node": "^20",
-    "@types/react": "^18",
-    "@types/react-dom": "^18",
-    "@types/ws": "^8.5.13",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.49",
-    "prisma": "^5.22.0",
-    "tailwindcss": "^3.4.15",
-    "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
-  }
-}
+
 {
   "name": "collabspace",
   "private": true,
@@ -62,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "collab": "tsx --env-file=.env collaboration-server/server.ts",
+    "collab": "tsx collaboration-server/server.ts",
+    "collab:local": "tsx --env-file=.env collaboration-server/server.ts",
     "test:e2e": "tsx --env-file=.env tests/e2e.ts",
     "postinstall": "prisma generate"
   },
