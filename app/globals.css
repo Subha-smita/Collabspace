@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { @apply text-[#37352f]; background: #fbfbfa; }
+input, select { @apply rounded-md border border-[#e3e2de] bg-white px-3 py-1.5 text-sm; }
+.btn { @apply inline-flex items-center justify-center gap-1.5 rounded-md bg-accent px-3.5 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-dark disabled:opacity-50; }
+.btn-secondary { @apply inline-flex items-center justify-center gap-1.5 rounded-md border border-[#e3e2de] bg-white px-3.5 py-1.5 text-sm font-medium text-[#37352f] shadow-sm transition-colors hover:bg-[#f7f6f3] disabled:opacity-50; }
+.btn-danger { @apply inline-flex items-center justify-center gap-1.5 rounded-md border border-red-200 bg-white px-3.5 py-1.5 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50; }
+.row-action { @apply rounded px-2 py-1 text-sm text-gray-600 transition-colors hover:bg-[#ebeae6] hover:text-[#37352f]; }
+.row-action-danger { @apply rounded px-2 py-1 text-sm text-red-700 transition-colors hover:bg-red-50; }
+.card { @apply rounded-xl border border-[#e9e9e7] bg-white shadow-sm; }
+.badge { @apply inline-flex items-center rounded-full bg-[#ebeae6] px-2 py-0.5 text-xs font-medium text-[#5f5e5b]; }
+button:focus-visible, a:focus-visible { @apply outline-none ring-2 ring-accent ring-offset-1; }
+input:focus, select:focus { @apply border-accent outline-none ring-1 ring-accent; }
+::selection { background: #cfe3f2; }
+
+.ProseMirror { min-height: 60vh; outline: none; line-height: 1.7; }
+.ProseMirror p { margin: .5rem 0; }
+.ProseMirror h1 { font-size: 2rem; font-weight: 700; margin: 1rem 0 .5rem; }
+.ProseMirror h2 { font-size: 1.5rem; font-weight: 700; margin: 1rem 0 .5rem; }
+.ProseMirror h3 { font-size: 1.25rem; font-weight: 600; margin: 1rem 0 .5rem; }
+.ProseMirror ul { list-style: disc; padding-left: 1.5rem; }
+.ProseMirror ol { list-style: decimal; padding-left: 1.5rem; }
+.ProseMirror blockquote { border-left: 3px solid #d1d5db; padding-left: 1rem; color: #4b5563; }
+.ProseMirror a { color: #2563eb; text-decoration: underline; }
+.collaboration-cursor__caret { position: relative; margin-left: -1px; margin-right: -1px; border-left: 1px solid #0d0d0d; border-right: 1px solid #0d0d0d; word-break: normal; pointer-events: none; }
+.collaboration-cursor__label { position: absolute; top: -1.4em; left: -1px; font-size: 12px; font-weight: 600; color: #fff; padding: .1rem .3rem; border-radius: 3px 3px 3px 0; white-space: nowrap; user-select: none; }
+
+
+.ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder); float: left; height: 0; color: #6b6a66; pointer-events: none; }
+.ProseMirror ul[data-type="taskList"] { list-style: none; padding-left: 0; }
+.ProseMirror ul[data-type="taskList"] li { display: flex; gap: .5rem; align-items: flex-start; }
+.ProseMirror ul[data-type="taskList"] li > label { flex: none; margin-top: .3rem; user-select: none; }
+.ProseMirror ul[data-type="taskList"] li > div { flex: 1; }
+.ProseMirror ul[data-type="taskList"] li[data-checked="true"] > div { color: #6b6a66; text-decoration: line-through; }
+.ProseMirror pre { background: #f7f6f3; border-radius: 4px; padding: .75rem 1rem; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .875rem; overflow-x: auto; }
+.ProseMirror code { background: #f1f0ee; border-radius: 3px; padding: .1rem .3rem; font-size: .9em; }
+.ProseMirror pre code { background: none; padding: 0; }
+.ProseMirror hr { border: none; border-top: 1px solid #e3e2de; margin: 1rem 0; }
+.ProseMirror img { max-width: 100%; border-radius: 4px; margin: .5rem 0; }
+.ProseMirror table { border-collapse: collapse; width: 100%; table-layout: fixed; margin: .75rem 0; }
+.ProseMirror th, .ProseMirror td { border: 1px solid #e3e2de; padding: .4rem .6rem; vertical-align: top; position: relative; }
+.ProseMirror th { background: #f7f6f3; font-weight: 600; text-align: left; }
+.ProseMirror .selectedCell { background: #ebeae6; }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+/* High contrast (Settings > Preferences) */
+.hc { color: #000; }
+.hc .text-gray-400, .hc .text-gray-500, .hc .text-gray-600, .hc .text-gray-700 { color: #1a1a1a !important; }
+.hc [class*="border-[#e9e9e7]"], .hc [class*="border-[#e3e2de]"], .hc .border, .hc .border-b, .hc .border-t, .hc .border-r { border-color: #6b6a66 !important; }
+.hc input, .hc select, .hc textarea { border-color: #37352f !important; }
+.hc a { text-decoration: underline; }
+
+/* Page layout: small text (Customize layout) */
+.small-text .ProseMirror { font-size: .875rem; line-height: 1.6; }
+.small-text .ProseMirror h1 { font-size: 1.6rem; }
+.small-text .ProseMirror h2 { font-size: 1.25rem; }
+.small-text .ProseMirror h3 { font-size: 1.1rem; }
+
+/* ---- Editor blocks: callout, toggle ---- */
+.ProseMirror div[data-type="callout"], .callout-view { display: flex; gap: .75rem; margin: .75rem 0; padding: .9rem 1rem; border-radius: 8px; background: #f1f0ee; }
+.ProseMirror div[data-type="callout"]::before { content: attr(data-emoji); flex: none; font-size: 1.25rem; line-height: 1.7; }
+.ProseMirror div[data-type="callout"] > * { flex: 1; min-width: 0; margin: 0; }
+.ProseMirror div[data-type="callout"] > * + * { margin-top: .4rem; }
+.ProseMirror div[data-type="toggle"] { position: relative; margin: .4rem 0; padding-left: 1.5rem; }
+.ProseMirror div[data-type="toggle"] > .toggle-btn { position: absolute; left: 0; top: .15rem; width: 1.4rem; height: 1.4rem; border-radius: 4px; color: #6b6a66; cursor: pointer; transition: transform .15s ease, background-color .15s; user-select: none; }
+.ProseMirror div[data-type="toggle"] > .toggle-btn:hover { background: #ebeae6; }
+.ProseMirror div[data-type="toggle"][data-open="true"] > .toggle-btn { transform: rotate(90deg); }
+.ProseMirror div[data-type="toggle"] > .toggle-body > :first-child { font-weight: 500; margin-top: 0; }
+.ProseMirror div[data-type="toggle"][data-open="false"] > .toggle-body > :not(:first-child) { display: none; }
+.ProseMirror div[data-type="toggle"][data-open="true"] > .toggle-body > :not(:first-child) { margin-left: .25rem; }
+@media (prefers-reduced-motion: reduce) { .ProseMirror div[data-type="toggle"] > .toggle-btn { transition: none; } }

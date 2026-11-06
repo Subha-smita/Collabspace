@@ -1,0 +1,311 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum PageKind {
+  DOC
+  CANVAS
+}
+
+enum Permission {
+  VIEW
+  COMMENT
+  EDIT
+}
+
+enum LinkAccess {
+  RESTRICTED
+  ANYONE
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  COMPLETE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum NotificationType {
+  MENTION
+  REPLY
+  MEMBER_ADDED
+}
+
+model User {
+  id                 String            @id @default(cuid())
+  name               String
+  email              String            @unique
+  passwordHash       String
+  createdAt          DateTime          @default(now())
+  owned              Workspace[]
+  memberships        WorkspaceMember[]
+  permissions        PagePermission[]
+  comments           Comment[]
+  versions           DocumentVersion[]
+  assignedTasks      Task[]            @relation("TaskAssignee")
+  createdTasks       Task[]            @relation("TaskCreator")
+  favorites          Favorite[]
+  visits             PageVisit[]
+  settings           UserSettings?
+  customTemplates    CustomTemplate[]
+  todos              Todo[]
+  todosSeededAt      DateTime?
+  notifications      Notification[]    @relation("NotifRecipient")
+  actedNotifications Notification[]    @relation("NotifActor")
+}
+
+model Workspace {
+  id            String            @id @default(cuid())
+  name          String
+  ownerId       String
+  owner         User              @relation(fields: [ownerId], references: [id])
+  createdAt     DateTime          @default(now())
+  members       WorkspaceMember[]
+  pages         Page[]
+  tasks         Task[]
+  notifications Notification[]
+
+  @@index([ownerId])
+}
+
+model WorkspaceMember {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        Role      @default(MEMBER)
+  joinedAt    DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Page {
+  id            String            @id @default(cuid())
+  workspaceId   String
+  parentId      String?
+  title         String            @default("Untitled")
+  kind          PageKind          @default(DOC)
+  icon          String?
+  cover         String?
+  fullWidth     Boolean           @default(false)
+  smallText     Boolean           @default(false)
+  hidePanel     Boolean           @default(false)
+  linkAccess    LinkAccess        @default(RESTRICTED)
+  linkPermission Permission       @default(VIEW)
+  published     Boolean           @default(false)
+  publishedAt   DateTime?
+  publishIndex  Boolean           @default(false)
+  createdBy     String
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  workspace     Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parent        Page?             @relation("Subpages", fields: [parentId], references: [id], onDelete: Cascade)
+  children      Page[]            @relation("Subpages")
+  permissions   PagePermission[]
+  comments      Comment[]
+  versions      DocumentVersion[]
+  updates       DocumentUpdate[]
+  favorites     Favorite[]
+  visits        PageVisit[]
+  uploads       Upload[]
+  notifications Notification[]
+
+  @@index([workspaceId, updatedAt])
+  @@index([parentId])
+}
+
+model PagePermission {
+  id         String     @id @default(cuid())
+  pageId     String
+  userId     String
+  permission Permission
+  page       Page       @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([pageId, userId])
+  @@index([userId])
+}
+
+model Comment {
+  id        String    @id @default(cuid())
+  pageId    String
+  userId    String
+  parentId  String?
+  content   String
+  resolved  Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  page      Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent    Comment?  @relation("Replies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   Comment[] @relation("Replies")
+
+  @@index([pageId, createdAt])
+}
+
+model DocumentVersion {
+  id          String   @id @default(cuid())
+  pageId      String
+  createdById String?
+  label       String?
+  data        Bytes
+  createdAt   DateTime @default(now())
+  page        Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  createdBy   User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([pageId, createdAt])
+}
+
+model DocumentUpdate {
+  id        Int      @id @default(autoincrement())
+  pageId    String
+  data      Bytes
+  createdAt DateTime @default(now())
+  page      Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId, id])
+}
+
+model Task {
+  id          String       @id @default(cuid())
+  workspaceId String
+  title       String
+  status      TaskStatus   @default(TODO)
+  priority    TaskPriority @default(MEDIUM)
+  dueDate     DateTime?
+  assigneeId  String?
+  createdById String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  assignee    User?        @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdBy   User?        @relation("TaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, status])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  pageId    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  page      Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, pageId])
+  @@index([pageId])
+}
+
+model Notification {
+  id          String           @id @default(cuid())
+  userId      String
+  actorId     String?
+  type        NotificationType
+  pageId      String?
+  workspaceId String?
+  message     String
+  read        Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  user        User             @relation("NotifRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  actor       User?            @relation("NotifActor", fields: [actorId], references: [id], onDelete: SetNull)
+  page        Page?            @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  workspace   Workspace?       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read, createdAt])
+}
+
+model PageVisit {
+  id        String   @id @default(cuid())
+  userId    String
+  pageId    String
+  visitedAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  page      Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, pageId])
+  @@index([userId, visitedAt])
+}
+
+model UserSettings {
+  userId         String   @id
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enterNewLine   Boolean  @default(false)
+  highContrast   Boolean  @default(false)
+  dateFormat     String   @default("relative")
+  openOnStart    String   @default("last")
+  trackRecents   Boolean  @default(true)
+  notifyMentions Boolean  @default(true)
+  notifyReplies  Boolean  @default(true)
+  notifyInvites  Boolean  @default(true)
+  sidebarHidden  String[] @default([])
+}
+
+model Upload {
+  id        String   @id @default(cuid())
+  pageId    String
+  userId    String
+  mime      String
+  size      Int
+  data      Bytes
+  createdAt DateTime @default(now())
+  page      Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId])
+}
+
+model CustomTemplate {
+  id          String   @id @default(cuid())
+  ownerId     String
+  name        String
+  description String   @default("")
+  icon        String?
+  cover       String?
+  coverData   Bytes?
+  coverMime   String?
+  content     Json
+  uses        Int      @default(0)
+  createdAt   DateTime @default(now())
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, createdAt])
+}
+
+model TemplateStat {
+  key  String @id
+  uses Int    @default(0)
+}
+
+model Todo {
+  id          String    @id @default(cuid())
+  userId      String
+  title       String
+  description String    @default("")
+  dueDate     DateTime? @db.Date
+  done        Boolean   @default(false)
+  doneAt      DateTime?
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, done, sortOrder])
+}

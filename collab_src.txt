@@ -1,0 +1,1708 @@
+﻿
+=== app\(auth)\login\page.tsx ===
+import AuthForm from '@/components/AuthForm';
+export default function Login() { return <AuthForm mode="login" />; }
+
+
+=== app\(auth)\register\page.tsx ===
+import AuthForm from '@/components/AuthForm';
+export default function Register() { return <AuthForm mode="register" />; }
+
+
+=== app\api\auth\login\route.ts ===
+import { NextResponse } from 'next/server';
+import bcrypt from 'bcryptjs';
+import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
+import { startSession } from '@/lib/auth';
+import { fail, limited, parse } from '@/lib/api';
+
+const S = z.object({ email: z.string().trim().toLowerCase().email(), password: z.string().min(1).max(128) });
+export async function POST(req: Request) {
+  if (limited(req, 'login')) return fail('Too many attempts, try again later', 429);
+  const d = await parse(req, S);
+  if (!d) return fail('Enter a valid email and password');
+  const u = await prisma.user.findUnique({ where: { email: d.email } });
+  if (!u || !(await bcrypt.compare(d.password, u.passwordHash))) return fail('Invalid credentials', 401);
+  await startSession(u.id);
+  return NextResponse.json({ ok: true });
+}
+
+
+=== app\api\auth\logout\route.ts ===
+import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { COOKIE } from '@/lib/session';
+export async function POST() {
+  cookies().delete(COOKIE);
+  return NextResponse.json({ ok: true });
+}
+
+
+=== app\api\auth\register\route.ts ===
+import { NextResponse } from 'next/server';
+import bcrypt from 'bcryptjs';
+import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
+import { startSession } from '@/lib/auth';
+import { fail, limited, parse } from '@/lib/api';
+
+const S = z.object({
+  name: z.string().trim().min(1).max(80),
+  email: z.string().trim().toLowerCase().email(),
+  password: z.string().min(8).max(128),
+});
+export async function POST(req: Request) {
+  if (limited(req, 'reg')) return fail('Too many requests', 429);
+  const d = await parse(req, S);
+  if (!d) return fail('Enter a name, a valid email and a password of at least 8 characters');
+  if (await prisma.user.findUnique({ where: { email: d.email } })) return fail('Email already registered', 409);
+  const u = await prisma.user.create({ data: { name: d.name, email: d.email, passwordHash: await bcrypt.hash(d.password, 12) } });
+  await startSession(u.id);
+  return NextResponse.json({ ok: true });
+}
+
+
+=== app\api\comments\[commentId]\route.ts ===
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
+import { canManage } from '@/lib/permissions';
+import { fail, gate, parse } from '@/lib/api';
+
+type Ctx = { params: { commentId: string } };
+const find = (id: string) => prisma.comment.findUnique({ where: { id } });
+
+export async function PATCH(req: Request, { params }: Ctx) {
+  const c = await find(params.commentId);
+  if (!c) return fail('Not found', 404);
+  const g = await gate(c.pageId, 'COMMENT');
+  if ('res' in g) return g.res;
+  const d = await parse(req, z.object({ resolved: z.boolean() }));
+  if (!d) return fail('Invalid body');
+  await prisma.comment.update({ where: { id: c.id }, data: { resolved: d.resolved } });
+  return NextResponse.json({ ok: true });
+}
+export async function DELETE(_: Request, { params }: Ctx) {
+  const c = await find(params.commentId);
+  if (!c) return fail('Not found', 404);
+  const g = await gate(c.pageId, 'COMMENT');
+  if ('res' in g) return g.res;
+  if (c.userId !== g.user.id && !(await canManage(g.user.id, c.pageId))) return fail('Forbidden', 403);
+  await prisma.comment.delete({ where: { id: c.id } });
+  return NextResponse.json({ ok: true });
+}
+
+
+=== app\api\pages\[pageId]\comments\route.ts ===
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
+import { fail, gate, limited, parse } from '@/lib/api';
+
+type Ctx = { params: { pageId: string } };
+const S = z.object({ content: z.string().trim().min(1).max(2000), parentId: z.string().optional() });
+const who = { select: { id: true, name: true } };
+
+export async function GET(_: Request, { params }: Ctx) {
+  const g = await gate(params.pageId, 'VIEW');
+  if ('res' in g) return g.res;
+  const list = await prisma.comment.findMany({
+    where: { pageId: params.pageId, parentId: null },
+    orderBy: { createdAt: 'asc' },
+    take: 200,
+    include: { user: who, replies: { orderBy: { createdAt: 'asc' }, include: { user: who } } },
+  });
+  return NextResponse.json(list);
+}
+export async function POST(req: Request, { params }: Ctx) {
+  const g = await gate(params.pageId, 'COMMENT');
+  if ('res' in g) return g.res;
+  if (limited(req, 'comment', 30)) return fail('Too many requests', 429);
+  const d = await parse(req, S);
+  if (!d) return fail('Comment cannot be empty');
+  if (d.parentId && !(await prisma.comment.findFirst({ where: { id: d.parentId, pageId: params.pageId, parentId: null } }))) return fail('Invalid parent', 404);
+  const c = await prisma.comment.create({ data: { pageId: params.pageId, userId: g.user.id, content: d.content, parentId: d.parentId } });
+  return NextResponse.json({ id: c.id });
+}
+
+
+=== app\api\pages\[pageId]\permissions\route.ts ===
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
+import { fail, gate, parse } from '@/lib/api';
+
+type Ctx = { params: { pageId: string } };
+const S = z.object({ email: z.string().trim().toLowerCase().email(), permission: z.enum(['VIEW', 'COMMENT', 'EDIT']) });
+
+export async function GET(_: Request, { params }: Ctx) {
+  const g = await gate(params.pageId, 'VIEW', true);
+  if ('res' in g) return g.res;
+  const [page, rows] = await Promise.all([
+    prisma.page.findUniqueOrThrow({ where: { id: params.pageId }, select: { workspace: { select: { owner: { select: { name: true, email: true } } } } } }),
+    prisma.pagePermission.findMany({ where: { pageId: params.pageId }, include: { user: { select: { name: true, email: true } } } }),
+  ]);
+  return NextResponse.json({
+    owner: page.workspace.owner,
+    entries: rows.map((r) => ({ userId: r.userId, name: r.user.name, email: r.user.email, permission: r.permission })),
+  });
+}
+export async function PUT(req: Request, { params }: Ctx) {
+  const g = await gate(params.pageId, 'VIEW', true);
+  if ('res' in g) return g.res;
+  const d = await parse(req, S);
+  if (!d) return fail('Enter a valid email and permission');
+  const t = await prisma.user.findUnique({ where: { email: d.email }, select: { id: true } });
+  if (!t) return fail('No registered user with that email', 404);
+  const ws = await prisma.page.findUniqueOrThrow({ where: { id: params.pageId }, select: { workspace: { select: { ownerId: true } } } });
+  if (ws.workspace.ownerId === t.id) return fail('Workspace owner always has full access');
+  await prisma.pagePermission.upsert({
+    where: { pageId_userId: { pageId: params.pageId, userId: t.id } },
+    update: { permission: d.permission },
+    create: { pageId: params.pageId, userId: t.id, permission: d.permission },
+  });
+  return NextResponse.json({ ok: true });
+}
+export async function DELETE(req: Request, { params }: Ctx) {
+  const g = await gate(params.pageId, 'VIEW', true);
+  if ('res' in g) return g.res;
+  const userId = new URL(req.url).searchParams.get('userId');
+  if (!userId) return fail('userId required');
+  await prisma.pagePermission.deleteMany({ where: { pageId: params.pageId, userId } });
+  return NextResponse.json({ ok: true });
+}
+
+
+=== app\api\pages\[pageId]\versions\route.ts ===
+import { NextResponse } from 'next/server';
+import * as Y from 'yjs';
+import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
+import { fail, gate, parse } from '@/lib/api';
+
+type Ctx = { params: { pageId: string } };
+
+export async function GET(_: Request, { params }: Ctx) {
+  const g = await gate(params.pageId, 'VIEW');
+  if ('res' in g) return g.res;
+  const list = await prisma.documentVersion.findMany({
+    where: { pageId: params.pageId },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+    select: { id: true, label: true, createdAt: true, createdBy: { select: { name: true } } },
+  });
+  return NextResponse.json(list);
+}
+
+// Snapshot is built server-side from persisted updates (never trusted from the client).
+export async function POST(req: Request, { params }: Ctx) {
+  const g = await gate(params.pageId, 'EDIT');
+  if ('res' in g) return g.res;
+  const d = await parse(req, z.object({ label: z.string().trim().max(100).optional() }));
+  if (!d) return fail('Invalid body');
+  await new Promise((r) => setTimeout(r, 700)); // let the collab server's 500ms persistence batch flush
+  const rows = await prisma.documentUpdate.findMany({ where: { pageId: params.pageId }, orderBy: { id: 'asc' }, select: { data: true } });
+  const doc = new Y.Doc();
+  rows.forEach((r) => Y.applyUpdate(doc, r.data));
+  const v = await prisma.documentVersion.create({
+    data: { pageId: params.pageId, createdById: g.user.id, label: d.label || null, data: Buffer.from(Y.encodeStateAsUpdate(doc)) },
+  });
+  return NextResponse.json({ id: v.id });
+}
+
+
+=== app\api\pages\[pageId]\route.ts ===
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
+import { fail, gate, parse } from '@/lib/api';
+
+type Ctx = { params: { pageId: string } };
+const S = z.object({ title: z.string().trim().min(1).max(120) });
+
+export async function PATCH(req: Request, { params }: Ctx) {
+  const g = await gate(params.pageId, 'EDIT');
+  if ('res' in g) return g.res;
+  const d = await parse(req, S);
+  if (!d) return fail('Title is required');
+  await prisma.page.update({ where: { id: params.pageId }, data: { title: d.title } });
+  return NextResponse.json({ ok: true });
+}
+export async function DELETE(_: Request, { params }: Ctx) {
+  const g = await gate(params.pageId, 'EDIT', true);
+  if ('res' in g) return g.res;
+  await prisma.page.delete({ where: { id: params.pageId } });
+  return NextResponse.json({ ok: true });
+}
+
+
+=== app\api\versions\[versionId]\route.ts ===
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import { fail, gate } from '@/lib/api';
+
+export async function GET(_: Request, { params }: { params: { versionId: string } }) {
+  const v = await prisma.documentVersion.findUnique({ where: { id: params.versionId } });
+  if (!v) return fail('Not found', 404);
+  const g = await gate(v.pageId, 'VIEW');
+  if ('res' in g) return g.res;
+  return NextResponse.json({ id: v.id, createdAt: v.createdAt, data: Buffer.from(v.data).toString('base64') });
+}
+
+
+=== app\api\workspaces\[workspaceId]\members\route.ts ===
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
+import { getUser } from '@/lib/auth';
+import { fail, parse } from '@/lib/api';
+
+type Ctx = { params: { workspaceId: string } };
+const S = z.object({ email: z.string().trim().toLowerCase().email() });
+
+// Invitation mechanism: owner adds an already-registered user by email.
+export async function POST(req: Request, { params }: Ctx) {
+  const u = await getUser();
+  if (!u) return fail('Unauthorized', 401);
+  if (!(await prisma.workspace.findFirst({ where: { id: params.workspaceId, ownerId: u.id } }))) return fail('Forbidden', 403);
+  const d = await parse(req, S);
+  if (!d) return fail('Enter a valid email');
+  const target = await prisma.user.findUnique({ where: { email: d.email } });
+  if (!target) return fail('No registered user with that email', 404);
+  await prisma.workspaceMember.upsert({
+    where: { workspaceId_userId: { workspaceId: params.workspaceId, userId: target.id } },
+    update: {},
+    create: { workspaceId: params.workspaceId, userId: target.id },
+  });
+  return NextResponse.json({ ok: true });
+}
+export async function DELETE(req: Request, { params }: Ctx) {
+  const u = await getUser();
+  if (!u) return fail('Unauthorized', 401);
+  if (!(await prisma.workspace.findFirst({ where: { id: params.workspaceId, ownerId: u.id } }))) return fail('Forbidden', 403);
+  const userId = new URL(req.url).searchParams.get('userId');
+  if (!userId || userId === u.id) return fail('Invalid member');
+  await prisma.workspaceMember.deleteMany({ where: { workspaceId: params.workspaceId, userId } });
+  await prisma.pagePermission.deleteMany({ where: { userId, page: { workspaceId: params.workspaceId } } });
+  return NextResponse.json({ ok: true });
+}
+
+
+=== app\api\workspaces\[workspaceId]\pages\route.ts ===
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
+import { getUser } from '@/lib/auth';
+import { fail, parse } from '@/lib/api';
+
+const S = z.object({ title: z.string().trim().min(1).max(120) });
+export async function POST(req: Request, { params }: { params: { workspaceId: string } }) {
+  const u = await getUser();
+  if (!u) return fail('Unauthorized', 401);
+  const m = await prisma.workspaceMember.findUnique({ where: { workspaceId_userId: { workspaceId: params.workspaceId, userId: u.id } } });
+  if (!m) return fail('Forbidden', 403);
+  const d = await parse(req, S);
+  if (!d) return fail('Title is required');
+  const p = await prisma.page.create({ data: { workspaceId: params.workspaceId, title: d.title, createdBy: u.id } });
+  return NextResponse.json({ id: p.id });
+}
+
+
+=== app\api\workspaces\[workspaceId]\route.ts ===
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
+import { getUser } from '@/lib/auth';
+import { fail, parse } from '@/lib/api';
+
+type Ctx = { params: { workspaceId: string } };
+const S = z.object({ name: z.string().trim().min(1).max(80) });
+
+export async function PATCH(req: Request, { params }: Ctx) {
+  const u = await getUser();
+  if (!u) return fail('Unauthorized', 401);
+  const d = await parse(req, S);
+  if (!d) return fail('Name is required');
+  const r = await prisma.workspace.updateMany({ where: { id: params.workspaceId, ownerId: u.id }, data: { name: d.name } });
+  return r.count ? NextResponse.json({ ok: true }) : fail('Forbidden', 403);
+}
+export async function DELETE(_: Request, { params }: Ctx) {
+  const u = await getUser();
+  if (!u) return fail('Unauthorized', 401);
+  const r = await prisma.workspace.deleteMany({ where: { id: params.workspaceId, ownerId: u.id } });
+  return r.count ? NextResponse.json({ ok: true }) : fail('Forbidden', 403);
+}
+
+
+=== app\api\workspaces\route.ts ===
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { prisma } from '@/lib/prisma';
+import { getUser } from '@/lib/auth';
+import { fail, parse } from '@/lib/api';
+
+const S = z.object({ name: z.string().trim().min(1).max(80) });
+export async function POST(req: Request) {
+  const u = await getUser();
+  if (!u) return fail('Unauthorized', 401);
+  const d = await parse(req, S);
+  if (!d) return fail('Name is required');
+  const w = await prisma.workspace.create({
+    data: { name: d.name, ownerId: u.id, members: { create: { userId: u.id, role: 'OWNER' } } },
+  });
+  return NextResponse.json({ id: w.id });
+}
+
+
+=== app\dashboard\page.tsx ===
+import Link from 'next/link';
+import { requireUser } from '@/lib/auth';
+import { prisma } from '@/lib/prisma';
+import Header from '@/components/Header';
+import { ActionForm } from '@/components/Actions';
+
+export default async function Dashboard() {
+  const u = await requireUser();
+  const [workspaces, pages] = await Promise.all([
+    prisma.workspace.findMany({
+      where: { members: { some: { userId: u.id } } },
+      orderBy: { createdAt: 'desc' },
+      include: { _count: { select: { pages: true, members: true } } },
+    }),
+    prisma.page.findMany({
+      where: { OR: [{ workspace: { members: { some: { userId: u.id } } } }, { permissions: { some: { userId: u.id } } }] },
+      orderBy: { updatedAt: 'desc' },
+      take: 8,
+      include: { workspace: { select: { name: true } } },
+    }),
+  ]);
+  return (
+    <>
+      <Header name={u.name} email={u.email} />
+      <main className="mx-auto max-w-4xl space-y-8 p-6">
+        <div>
+          <h1 className="text-2xl font-semibold">Welcome, {u.name}</h1>
+          <p className="text-sm text-gray-600">{u.email}</p>
+        </div>
+        <section>
+          <h2 className="mb-2 font-semibold">Workspaces</h2>
+          <ActionForm url="/api/workspaces" name="name" placeholder="New workspace name" button="Create workspace" gotoPrefix="/workspaces" />
+          {workspaces.length === 0 ? (
+            <p className="mt-4 rounded border border-dashed p-6 text-center text-gray-500">No workspaces yet. Create your first one above.</p>
+          ) : (
+            <ul className="mt-4 grid gap-3 sm:grid-cols-2">
+              {workspaces.map((w) => (
+                <li key={w.id}>
+                  <Link href={`/workspaces/${w.id}`} className="block rounded border bg-white p-4 hover:shadow">
+                    <div className="font-medium">{w.name}</div>
+                    <div className="text-sm text-gray-500">{w._count.pages} pages · {w._count.members} members{w.ownerId === u.id ? ' · owner' : ''}</div>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section>
+          <h2 className="mb-2 font-semibold">Recent pages</h2>
+          {pages.length === 0 ? (
+            <p className="text-sm text-gray-500">Nothing here yet.</p>
+          ) : (
+            <ul className="divide-y rounded border bg-white">
+              {pages.map((p) => (
+                <li key={p.id}>
+                  <Link href={`/pages/${p.id}`} className="flex justify-between p-3 hover:bg-gray-50">
+                    <span>{p.title} <span className="text-sm text-gray-500">· {p.workspace.name}</span></span>
+                    <span className="text-sm text-gray-500">{p.updatedAt.toLocaleString()}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </main>
+    </>
+  );
+}
+
+
+=== app\pages\[pageId]\page.tsx ===
+import Link from 'next/link';
+import { notFound } from 'next/navigation';
+import { requireUser } from '@/lib/auth';
+import { prisma } from '@/lib/prisma';
+import { canManage, getPerm } from '@/lib/permissions';
+import Header from '@/components/Header';
+import Editor from '@/components/Editor';
+
+const COLORS = ['#e11d48', '#2563eb', '#16a34a', '#d97706', '#7c3aed', '#0891b2', '#db2777', '#65a30d']; // 6-digit hex (selection alpha suffix)
+const colorFor = (id: string) => COLORS[[...id].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length];
+
+export default async function PageView({ params, searchParams }: { params: { pageId: string }; searchParams: { collab?: string } }) {
+  const u = await requireUser();
+  const perm = await getPerm(u.id, params.pageId);
+  if (!perm) notFound();
+  const page = await prisma.page.findUniqueOrThrow({ where: { id: params.pageId }, select: { title: true, workspace: { select: { id: true, name: true } } } });
+  const manage = await canManage(u.id, params.pageId);
+  // Dev-only override to attach a browser to a specific collab instance (e.g. ?collab=ws://localhost:1235)
+  const override = process.env.NODE_ENV !== 'production' && /^ws:\/\/localhost:\d+$/.test(searchParams.collab ?? '') ? searchParams.collab : undefined;
+  const collabUrl = override ?? process.env.NEXT_PUBLIC_COLLABORATION_URL!;
+  return (
+    <>
+      <Header name={u.name} email={u.email} />
+      <div className="px-6 pt-3 text-sm">
+        <Link href={`/workspaces/${page.workspace.id}`} className="text-accent hover:underline">← {page.workspace.name}</Link>
+      </div>
+      <Editor
+        pageId={params.pageId}
+        title={page.title}
+        perm={perm}
+        canManage={manage}
+        collabUrl={collabUrl}
+        user={{ id: u.id, name: u.name, color: colorFor(u.id) }}
+      />
+    </>
+  );
+}
+
+
+=== app\workspaces\[workspaceId]\page.tsx ===
+import Link from 'next/link';
+import { notFound } from 'next/navigation';
+import { requireUser } from '@/lib/auth';
+import { prisma } from '@/lib/prisma';
+import Header from '@/components/Header';
+import { ActionButton, ActionForm } from '@/components/Actions';
+
+export default async function WorkspacePage({ params }: { params: { workspaceId: string } }) {
+  const u = await requireUser();
+  const w = await prisma.workspace.findFirst({
+    where: { id: params.workspaceId, members: { some: { userId: u.id } } },
+    include: {
+      members: { include: { user: { select: { id: true, name: true, email: true } } }, orderBy: { joinedAt: 'asc' } },
+      pages: { orderBy: { updatedAt: 'desc' } },
+    },
+  });
+  if (!w) notFound();
+  const owner = w.ownerId === u.id;
+  const api = `/api/workspaces/${w.id}`;
+  return (
+    <>
+      <Header name={u.name} email={u.email} />
+      <main className="mx-auto max-w-4xl space-y-8 p-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <Link href="/dashboard" className="text-sm text-accent hover:underline">← Dashboard</Link>
+            <h1 className="text-2xl font-semibold">{w.name}</h1>
+          </div>
+          {owner && <ActionButton url={api} label="Delete workspace" confirmText="Delete this workspace and all pages?" goto="/dashboard" />}
+        </div>
+        {owner && <ActionForm url={api} method="PATCH" name="name" defaultValue={w.name} keep placeholder="Workspace name" button="Rename" />}
+
+        <section>
+          <h2 className="mb-2 font-semibold">Pages</h2>
+          <ActionForm url={`${api}/pages`} name="title" placeholder="New page title" button="Create page" gotoPrefix="/pages" />
+          {w.pages.length === 0 ? (
+            <p className="mt-4 rounded border border-dashed p-6 text-center text-gray-500">No pages yet.</p>
+          ) : (
+            <ul className="mt-4 divide-y rounded border bg-white">
+              {w.pages.map((p) => (
+                <li key={p.id}>
+                  <Link href={`/pages/${p.id}`} className="flex justify-between p-3 hover:bg-gray-50">
+                    <span>{p.title}</span>
+                    <span className="text-sm text-gray-500">{p.updatedAt.toLocaleString()}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section>
+          <h2 className="mb-2 font-semibold">Members</h2>
+          {owner && <ActionForm url={`${api}/members`} name="email" type="email" placeholder="Invite by email (registered user)" button="Add member" />}
+          <ul className="mt-4 divide-y rounded border bg-white">
+            {w.members.map((m) => (
+              <li key={m.id} className="flex items-center justify-between p-3">
+                <span>{m.user.name} <span className="text-sm text-gray-500">{m.user.email} · {m.role.toLowerCase()}</span></span>
+                {owner && m.user.id !== u.id && <ActionButton url={`${api}/members?userId=${m.user.id}`} label="Remove" confirmText={`Remove ${m.user.name}?`} />}
+              </li>
+            ))}
+          </ul>
+        </section>
+      </main>
+    </>
+  );
+}
+
+
+=== app\globals.css ===
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { @apply bg-gray-50 text-gray-900; }
+input, select { @apply rounded border border-gray-300 bg-white px-2 py-1 text-sm; }
+.btn { @apply rounded bg-gray-900 px-3 py-1 text-sm text-white hover:bg-gray-700 disabled:opacity-50; }
+
+.ProseMirror { min-height: 60vh; outline: none; }
+.ProseMirror p { margin: .5rem 0; }
+.ProseMirror h1 { font-size: 2rem; font-weight: 700; margin: 1rem 0 .5rem; }
+.ProseMirror h2 { font-size: 1.5rem; font-weight: 700; margin: 1rem 0 .5rem; }
+.ProseMirror h3 { font-size: 1.25rem; font-weight: 600; margin: 1rem 0 .5rem; }
+.ProseMirror ul { list-style: disc; padding-left: 1.5rem; }
+.ProseMirror ol { list-style: decimal; padding-left: 1.5rem; }
+.ProseMirror blockquote { border-left: 3px solid #d1d5db; padding-left: 1rem; color: #4b5563; }
+.ProseMirror a { color: #2563eb; text-decoration: underline; }
+.collaboration-cursor__caret { position: relative; margin-left: -1px; margin-right: -1px; border-left: 1px solid #0d0d0d; border-right: 1px solid #0d0d0d; word-break: normal; pointer-events: none; }
+.collaboration-cursor__label { position: absolute; top: -1.4em; left: -1px; font-size: 12px; font-weight: 600; color: #fff; padding: .1rem .3rem; border-radius: 3px 3px 3px 0; white-space: nowrap; user-select: none; }
+
+
+=== app\layout.tsx ===
+import './globals.css';
+import type { ReactNode } from 'react';
+export const metadata = { title: 'CollabSpace' };
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+
+
+=== app\page.tsx ===
+import { redirect } from 'next/navigation';
+export default function Home() { redirect('/dashboard'); }
+
+
+=== collaboration-server\server.ts ===
+/**
+ * Yjs collaboration server: ws + y-protocols, Postgres persistence, Redis pub/sub fan-out.
+ * Run N instances (different COLLABORATION_PORT) against the same Postgres + Redis.
+ */
+import http from 'http';
+import { randomUUID } from 'crypto';
+import { WebSocketServer, WebSocket } from 'ws';
+import Redis from 'ioredis';
+import * as Y from 'yjs';
+import * as sync from 'y-protocols/sync';
+import * as awarenessProtocol from 'y-protocols/awareness';
+import * as encoding from 'lib0/encoding';
+import * as decoding from 'lib0/decoding';
+import { prisma } from '../lib/prisma';
+import { COOKIE, verifySession } from '../lib/session';
+import { getPerm, type Perm } from '../lib/permissions';
+
+const PORT = Number(process.env.COLLABORATION_PORT ?? 1234);
+const APP_ORIGIN = new URL(process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000').origin;
+const INSTANCE = randomUUID(); // 36 chars; used to ignore our own Redis messages
+const MSG_SYNC = 0;
+const MSG_AWARENESS = 1;
+const FLUSH_MS = 500; // batch keystrokes into one DB row
+const COMPACT_AFTER = 50; // merge update rows after N writes
+
+const pub = new Redis(process.env.REDIS_URL!);
+const sub = new Redis(process.env.REDIS_URL!);
+
+type Room = {
+  id: string;
+  doc: Y.Doc;
+  awareness: awarenessProtocol.Awareness;
+  conns: Map<WebSocket, Set<number>>; // conn -> awareness client ids it controls
+  buf: Uint8Array[];
+  timer?: NodeJS.Timeout;
+  writes: number;
+  ready: Promise<void>;
+};
+const rooms = new Map<string, Room>();
+const chan = (id: string) => `collab:${id}`;
+const frame = (kind: number, payload: Uint8Array) => Buffer.concat([Buffer.from([kind]), Buffer.from(INSTANCE), Buffer.from(payload)]);
+const send = (c: WebSocket, m: Uint8Array) => { if (c.readyState === WebSocket.OPEN) c.send(m, (e) => e && c.close()); };
+
+/* ---------- persistence ---------- */
+async function compact(pageId: string) {
+  const rows = await prisma.documentUpdate.findMany({ where: { pageId }, orderBy: { id: 'asc' }, select: { id: true, data: true } });
+  if (rows.length < 2) return;
+  const merged = Y.mergeUpdates(rows.map((r) => r.data));
+  await prisma.$transaction([
+    prisma.documentUpdate.deleteMany({ where: { id: { in: rows.map((r) => r.id) } } }), // only rows we read; concurrent inserts survive
+    prisma.documentUpdate.create({ data: { pageId, data: Buffer.from(merged) } }),
+  ]);
+}
+
+async function flush(room: Room) {
+  room.timer = undefined;
+  if (!room.buf.length) return;
+  const merged = Y.mergeUpdates(room.buf.splice(0));
+  try {
+    await prisma.documentUpdate.create({ data: { pageId: room.id, data: Buffer.from(merged) } });
+  } catch (e) {
+    if ((e as { code?: string }).code === 'P2003') { room.conns.forEach((_, c) => c.close(4404)); return; } // page deleted
+    console.error('persist failed, will retry', e);
+    room.buf.unshift(merged); // never drop updates
+    room.timer = setTimeout(() => flush(room), 2000);
+    return;
+  }
+  prisma.page.update({ where: { id: room.id }, data: { updatedAt: new Date() } }).catch(() => {});
+  if (++room.writes >= COMPACT_AFTER) {
+    room.writes = 1;
+    compact(room.id).catch((e) => console.error('compact failed', e));
+  }
+}
+
+/* ---------- room lifecycle ---------- */
+function onDocUpdate(room: Room, update: Uint8Array, origin: unknown) {
+  const e = encoding.createEncoder();
+  encoding.writeVarUint(e, MSG_SYNC);
+  sync.writeUpdate(e, update);
+  const m = encoding.toUint8Array(e);
+  room.conns.forEach((_, c) => { if (c !== origin) send(c, m); });
+  if (origin === 'redis' || origin === 'db') return; // already persisted/published by the originating instance
+  pub.publish(chan(room.id), frame(0, update)).catch(console.error);
+  room.buf.push(update);
+  if (!room.timer) room.timer = setTimeout(() => flush(room), FLUSH_MS);
+}
+
+function onAwareness(room: Room, ch: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) {
+  if (origin instanceof WebSocket) {
+    const ids = room.conns.get(origin);
+    if (ids) { ch.added.forEach((i) => ids.add(i)); ch.removed.forEach((i) => ids.delete(i)); }
+  }
+  const upd = awarenessProtocol.encodeAwarenessUpdate(room.awareness, [...ch.added, ...ch.updated, ...ch.removed]);
+  const e = encoding.createEncoder();
+  encoding.writeVarUint(e, MSG_AWARENESS);
+  encoding.writeVarUint8Array(e, upd);
+  const m = encoding.toUint8Array(e);
+  room.conns.forEach((_, c) => send(c, m));
+  if (origin !== 'redis') pub.publish(chan(room.id), frame(1, upd)).catch(console.error);
+}
+
+function getRoom(id: string): Room {
+  const existing = rooms.get(id);
+  if (existing) return existing;
+  const doc = new Y.Doc();
+  const awareness = new awarenessProtocol.Awareness(doc);
+  awareness.setLocalState(null);
+  const room: Room = { id, doc, awareness, conns: new Map(), buf: [], writes: 0, ready: Promise.resolve() };
+  rooms.set(id, room);
+  room.ready = (async () => {
+    await sub.subscribe(chan(id)); // subscribe before loading so no cross-instance update is missed
+    const rows = await prisma.documentUpdate.findMany({ where: { pageId: id }, orderBy: { id: 'asc' }, select: { data: true } });
+    doc.transact(() => rows.forEach((r) => Y.applyUpdate(doc, r.data)), 'db');
+    room.writes = rows.length;
+    doc.on('update', (u: Uint8Array, o: unknown) => onDocUpdate(room, u, o));
+    awareness.on('update', (c: { added: number[]; updated: number[]; removed: number[] }, o: unknown) => onAwareness(room, c, o));
+  })().catch((e) => {
+    console.error('room load failed', id, e);
+    rooms.delete(id);
+    room.conns.forEach((_, c) => c.close(1011));
+  });
+  return room;
+}
+
+async function leave(room: Room, ws: WebSocket) {
+  const ids = room.conns.get(ws);
+  room.conns.delete(ws);
+  if (ids?.size) awarenessProtocol.removeAwarenessStates(room.awareness, [...ids], null);
+  if (room.conns.size) return;
+  await room.ready;
+  if (room.timer) clearTimeout(room.timer);
+  await flush(room);
+  if (room.conns.size || rooms.get(room.id) !== room) return; // someone joined meanwhile
+  rooms.delete(room.id);
+  await sub.unsubscribe(chan(room.id)).catch(() => {});
+  await compact(room.id).catch((e) => console.error('compact failed', e));
+  room.awareness.destroy();
+  room.doc.destroy();
+}
+
+/* ---------- protocol ---------- */
+function onMessage(room: Room, conn: WebSocket, perm: Perm, data: Uint8Array) {
+  const dec = decoding.createDecoder(data);
+  const type = decoding.readVarUint(dec);
+  if (type === MSG_SYNC) {
+    // Read-only users may only request state (step1). Their step2/update messages are dropped.
+    if (decoding.peekVarUint(dec) !== sync.messageYjsSyncStep1 && perm !== 'EDIT') return;
+    const e = encoding.createEncoder();
+    encoding.writeVarUint(e, MSG_SYNC);
+    sync.readSyncMessage(dec, e, room.doc, conn);
+    if (encoding.length(e) > 1) send(conn, encoding.toUint8Array(e));
+  } else if (type === MSG_AWARENESS) {
+    awarenessProtocol.applyAwarenessUpdate(room.awareness, decoding.readVarUint8Array(dec), conn);
+  }
+}
+
+sub.on('messageBuffer', (ch: Buffer, msg: Buffer) => {
+  const room = rooms.get(ch.toString().slice('collab:'.length));
+  if (!room || msg.subarray(1, 37).toString() === INSTANCE) return;
+  const payload = new Uint8Array(msg.subarray(37));
+  try {
+    if (msg[0] === 0) Y.applyUpdate(room.doc, payload, 'redis');
+    else awarenessProtocol.applyAwarenessUpdate(room.awareness, payload, 'redis');
+  } catch (e) { console.error('bad redis message', e); }
+});
+
+/* ---------- server ---------- */
+const server = http.createServer((_q, res) => { res.writeHead(200); res.end('ok'); });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 5 * 1024 * 1024 });
+type Ctx = { uid: string; pageId: string; perm: Perm };
+
+server.on('upgrade', async (req, socket, head) => {
+  const reject = (code: number, text: string) => { socket.write(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\n\r\n`); socket.destroy(); };
+  try {
+    if (req.headers.origin !== APP_ORIGIN) return reject(403, 'Forbidden');
+    const pageId = decodeURIComponent((req.url ?? '').split('?')[0].slice(1));
+    if (!pageId || pageId.length > 64) return reject(400, 'Bad Request');
+    const token = req.headers.cookie?.split(';').map((s) => s.trim().split('=')).find(([k]) => k === COOKIE)?.[1];
+    const uid = await verifySession(token);
+    if (!uid) return reject(401, 'Unauthorized');
+    const perm = await getPerm(uid, pageId);
+    if (!perm) return reject(403, 'Forbidden');
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, { uid, pageId, perm } satisfies Ctx));
+  } catch (e) {
+    console.error(e);
+    reject(500, 'Internal Server Error');
+  }
+});
+
+wss.on('connection', (ws: WebSocket, _req: http.IncomingMessage, ctx: Ctx) => {
+  const room = getRoom(ctx.pageId);
+  room.conns.set(ws, new Set());
+  const ready = room.ready;
+
+  ws.on('message', async (data: Buffer) => {
+    await ready;
+    if (ws.readyState !== WebSocket.OPEN) return;
+    try { onMessage(room, ws, ctx.perm, new Uint8Array(data)); } catch (e) { console.error(e); ws.close(1003); }
+  });
+
+  let alive = true;
+  ws.on('pong', () => { alive = true; });
+  const ping = setInterval(() => { if (!alive) return ws.terminate(); alive = false; ws.ping(); }, 30_000);
+  // Re-check permission so revocation/downgrade applies to live connections.
+  const recheck = setInterval(async () => {
+    const p = await getPerm(ctx.uid, ctx.pageId).catch(() => ctx.perm);
+    if (!p) ws.close(4403); else ctx.perm = p;
+  }, 15_000);
+  ws.on('close', () => { clearInterval(ping); clearInterval(recheck); void leave(room, ws); });
+
+  ready.then(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const e = encoding.createEncoder();
+    encoding.writeVarUint(e, MSG_SYNC);
+    sync.writeSyncStep1(e, room.doc);
+    send(ws, encoding.toUint8Array(e));
+    const states = room.awareness.getStates();
+    if (states.size) {
+      const a = encoding.createEncoder();
+      encoding.writeVarUint(a, MSG_AWARENESS);
+      encoding.writeVarUint8Array(a, awarenessProtocol.encodeAwarenessUpdate(room.awareness, [...states.keys()]));
+      send(ws, encoding.toUint8Array(a));
+    }
+  });
+});
+
+async function shutdown() {
+  await Promise.all([...rooms.values()].map((r) => { if (r.timer) clearTimeout(r.timer); return flush(r); }));
+  process.exit(0);
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
+server.listen(PORT, () => console.log(`collab instance ${INSTANCE} listening on :${PORT}`));
+
+
+=== components\Actions.tsx ===
+'use client';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
+
+async function call(url: string, method: string, body?: unknown) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  return { ok: r.ok, j: await r.json().catch(() => ({})) };
+}
+
+export function ActionForm(p: {
+  url: string; name: string; placeholder: string; button: string;
+  method?: string; type?: string; defaultValue?: string; keep?: boolean; gotoPrefix?: string;
+}) {
+  const router = useRouter();
+  const [v, setV] = useState(p.defaultValue ?? '');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  return (
+    <form
+      className="flex flex-wrap items-center gap-2"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setErr('');
+        const { ok, j } = await call(p.url, p.method ?? 'POST', { [p.name]: v });
+        setBusy(false);
+        if (!ok) return setErr(j.error ?? 'Failed');
+        if (!p.keep) setV('');
+        if (p.gotoPrefix) router.push(`${p.gotoPrefix}/${j.id}`);
+        else router.refresh();
+      }}
+    >
+      <input type={p.type ?? 'text'} value={v} onChange={(e) => setV(e.target.value)} placeholder={p.placeholder} required />
+      <button className="btn" disabled={busy}>{p.button}</button>
+      {err && <span className="text-sm text-red-600">{err}</span>}
+    </form>
+  );
+}
+
+export function ActionButton(p: { url: string; label: string; method?: string; confirmText?: string; goto?: string }) {
+  const router = useRouter();
+  return (
+    <button
+      className="text-sm text-red-600 hover:underline"
+      onClick={async () => {
+        if (p.confirmText && !confirm(p.confirmText)) return;
+        const { ok, j } = await call(p.url, p.method ?? 'DELETE');
+        if (!ok) return alert(j.error ?? 'Failed');
+        if (p.goto) router.push(p.goto);
+        else router.refresh();
+      }}
+    >
+      {p.label}
+    </button>
+  );
+}
+
+export function LogoutButton() {
+  const router = useRouter();
+  return (
+    <button
+      className="text-sm text-gray-600 hover:underline"
+      onClick={async () => {
+        await call('/api/auth/logout', 'POST');
+        router.push('/login');
+        router.refresh();
+      }}
+    >
+      Log out
+    </button>
+  );
+}
+
+
+=== components\AuthForm.tsx ===
+'use client';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
+
+export default function AuthForm({ mode }: { mode: 'login' | 'register' }) {
+  const router = useRouter();
+  const [f, setF] = useState({ name: '', email: '', password: '' });
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const reg = mode === 'register';
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setErr('');
+    const r = await fetch(`/api/auth/${mode}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(f) });
+    const j = await r.json().catch(() => ({}));
+    setBusy(false);
+    if (!r.ok) return setErr(j.error ?? 'Something went wrong');
+    router.push('/dashboard');
+    router.refresh();
+  }
+  return (
+    <main className="mx-auto mt-24 w-full max-w-sm rounded-lg border bg-white p-6 shadow-sm">
+      <h1 className="mb-4 text-xl font-semibold">{reg ? 'Create account' : 'Log in'}</h1>
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        {reg && <input placeholder="Name" value={f.name} onChange={set('name')} required />}
+        <input type="email" placeholder="Email" value={f.email} onChange={set('email')} required />
+        <input type="password" placeholder="Password (min 8 chars)" value={f.password} onChange={set('password')} required minLength={reg ? 8 : 1} />
+        {err && <p className="text-sm text-red-600">{err}</p>}
+        <button className="btn" disabled={busy}>{busy ? '…' : reg ? 'Register' : 'Log in'}</button>
+      </form>
+      <p className="mt-4 text-sm text-gray-600">
+        {reg ? 'Have an account? ' : 'No account? '}
+        <Link className="text-accent underline" href={reg ? '/login' : '/register'}>{reg ? 'Log in' : 'Register'}</Link>
+      </p>
+    </main>
+  );
+}
+
+
+=== components\Editor.tsx ===
+'use client';
+import { useEffect, useState } from 'react';
+import * as Y from 'yjs';
+import { WebsocketProvider } from 'y-websocket';
+import { EditorContent, useEditor } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Underline from '@tiptap/extension-underline';
+import Link from '@tiptap/extension-link';
+import Collaboration from '@tiptap/extension-collaboration';
+import CollaborationCursor from '@tiptap/extension-collaboration-cursor';
+import { Comments, Share, Versions, type Perm } from './Panels';
+
+type U = { id: string; name: string; color: string };
+type Props = { pageId: string; title: string; perm: Perm; user: U; collabUrl: string; canManage: boolean };
+
+export default function Editor(p: Props) {
+  const [c, setC] = useState<{ doc: Y.Doc; provider: WebsocketProvider } | null>(null);
+  useEffect(() => {
+    const doc = new Y.Doc();
+    // Room name = page id. Auth: browser sends the httpOnly session cookie on the WS handshake.
+    const provider = new WebsocketProvider(p.collabUrl, p.pageId, doc);
+    setC({ doc, provider });
+    return () => {
+      provider.destroy();
+      doc.destroy();
+      setC(null);
+    };
+  }, [p.collabUrl, p.pageId]);
+  return c ? <Inner {...p} {...c} /> : <div className="p-8 text-gray-500">Loading editor…</div>;
+}
+
+function Inner({ pageId, title, perm, user, canManage, doc, provider }: Props & { doc: Y.Doc; provider: WebsocketProvider }) {
+  const [status, setStatus] = useState('connecting');
+  const [synced, setSynced] = useState(false);
+  const [peers, setPeers] = useState<U[]>([]);
+  const [tab, setTab] = useState<'comments' | 'history' | 'share'>('comments');
+  const [name, setName] = useState(title);
+  const editable = perm === 'EDIT';
+
+  const editor = useEditor(
+    {
+      immediatelyRender: false,
+      editable,
+      extensions: [
+        StarterKit.configure({ history: false }), // Yjs undo manager replaces history
+        Underline,
+        Link.configure({ openOnClick: false }),
+        Collaboration.configure({ document: doc }),
+        CollaborationCursor.configure({ provider, user }),
+      ],
+    },
+    [doc, provider],
+  );
+
+  useEffect(() => {
+    const aw = provider.awareness;
+    const onPeers = () => {
+      const m = new Map<string, U>();
+      aw.getStates().forEach((s) => s.user && m.set(s.user.id, s.user));
+      setPeers([...m.values()]);
+    };
+    const onStatus = (e: { status: string }) => setStatus(e.status);
+    const onSync = (s: boolean) => setSynced(s);
+    provider.on('status', onStatus);
+    provider.on('sync', onSync);
+    aw.on('change', onPeers);
+    onPeers();
+    return () => {
+      provider.off('status', onStatus);
+      provider.off('sync', onSync);
+      aw.off('change', onPeers);
+    };
+  }, [provider]);
+
+  const rename = async () => {
+    if (!editable || !name.trim() || name === title) return;
+    await fetch(`/api/pages/${pageId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: name }) });
+  };
+  const setLink = () => {
+    const url = window.prompt('URL (empty to remove)');
+    if (url === null || !editor) return;
+    if (url) editor.chain().focus().setLink({ href: url }).run();
+    else editor.chain().focus().unsetLink().run();
+  };
+
+  const btns: [string, () => void, boolean][] = editor
+    ? [
+        ['B', () => editor.chain().focus().toggleBold().run(), editor.isActive('bold')],
+        ['I', () => editor.chain().focus().toggleItalic().run(), editor.isActive('italic')],
+        ['U', () => editor.chain().focus().toggleUnderline().run(), editor.isActive('underline')],
+        ['H1', () => editor.chain().focus().toggleHeading({ level: 1 }).run(), editor.isActive('heading', { level: 1 })],
+        ['H2', () => editor.chain().focus().toggleHeading({ level: 2 }).run(), editor.isActive('heading', { level: 2 })],
+        ['H3', () => editor.chain().focus().toggleHeading({ level: 3 }).run(), editor.isActive('heading', { level: 3 })],
+        ['• List', () => editor.chain().focus().toggleBulletList().run(), editor.isActive('bulletList')],
+        ['1. List', () => editor.chain().focus().toggleOrderedList().run(), editor.isActive('orderedList')],
+        ['Quote', () => editor.chain().focus().toggleBlockquote().run(), editor.isActive('blockquote')],
+        ['Link', setLink, editor.isActive('link')],
+        ['Undo', () => editor.chain().focus().undo().run(), false],
+        ['Redo', () => editor.chain().focus().redo().run(), false],
+      ]
+    : [];
+
+  const live = status === 'connected';
+  const tabs = ['comments', 'history', ...(canManage ? ['share'] : [])] as ('comments' | 'history' | 'share')[];
+
+  return (
+    <div className="mx-auto grid max-w-6xl gap-6 p-6 lg:grid-cols-[1fr_320px]">
+      <section className="min-w-0 rounded border bg-white p-6">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <input
+            className="w-full max-w-md border-0 bg-transparent px-0 text-3xl font-bold focus:outline-none"
+            value={name}
+            readOnly={!editable}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={rename}
+            aria-label="Page title"
+          />
+          <div className="flex items-center gap-2">
+            <div className="flex -space-x-2">
+              {peers.map((p) => (
+                <span key={p.id} title={p.name} style={{ background: p.color }} className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white text-xs font-semibold text-white">
+                  {p.name.slice(0, 2).toUpperCase()}
+                </span>
+              ))}
+            </div>
+            <span className={`rounded px-2 py-0.5 text-xs ${live ? (synced ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800') : 'bg-red-100 text-red-800'}`}>
+              {live ? (synced ? 'Live' : 'Syncing…') : 'Offline – retrying'}
+            </span>
+          </div>
+        </div>
+        {editable ? (
+          <div className="mb-3 flex flex-wrap gap-1 border-b pb-2">
+            {btns.map(([l, fn, on]) => (
+              <button key={l} type="button" onMouseDown={(e) => e.preventDefault()} onClick={fn} className={`rounded px-2 py-1 text-sm ${on ? 'bg-accent text-white' : 'hover:bg-gray-100'}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="mb-3 rounded bg-gray-100 px-3 py-1 text-sm text-gray-600">You have {perm.toLowerCase()} access — editing is disabled.</p>
+        )}
+        <EditorContent editor={editor} />
+      </section>
+
+      <aside className="rounded border bg-white p-4">
+        <div className="mb-3 flex gap-3 border-b pb-2 text-sm">
+          {tabs.map((t) => (
+            <button key={t} onClick={() => setTab(t)} className={`capitalize ${tab === t ? 'font-semibold underline' : 'text-gray-500'}`}>{t}</button>
+          ))}
+        </div>
+        {tab === 'comments' && <Comments pageId={pageId} perm={perm} userId={user.id} />}
+        {tab === 'history' && <Versions pageId={pageId} perm={perm} doc={doc} />}
+        {tab === 'share' && canManage && <Share pageId={pageId} />}
+      </aside>
+    </div>
+  );
+}
+
+
+=== components\Header.tsx ===
+import Link from 'next/link';
+import { LogoutButton } from './Actions';
+
+export default function Header({ name, email }: { name: string; email?: string }) {
+  return (
+    <header className="flex items-center justify-between border-b bg-white px-6 py-3">
+      <Link href="/dashboard" className="font-semibold">CollabSpace</Link>
+      <div className="flex items-center gap-3 text-sm">
+        <span title={email}>{name}</span>
+        <LogoutButton />
+      </div>
+    </header>
+  );
+}
+
+
+=== components\Panels.tsx ===
+'use client';
+import { useCallback, useEffect, useState } from 'react';
+import * as Y from 'yjs';
+
+export type Perm = 'VIEW' | 'COMMENT' | 'EDIT';
+
+async function j(url: string, method = 'GET', body?: unknown) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error ?? 'Request failed');
+  return d;
+}
+const fmt = (s: string) => new Date(s).toLocaleString();
+const msg = (e: unknown) => (e instanceof Error ? e.message : 'Failed');
+
+/* ---------------- Comments ---------------- */
+type C = { id: string; content: string; resolved: boolean; createdAt: string; user: { id: string; name: string }; replies?: C[] };
+
+export function Comments({ pageId, perm, userId }: { pageId: string; perm: Perm; userId: string }) {
+  const [list, setList] = useState<C[]>([]);
+  const [text, setText] = useState('');
+  const [reply, setReply] = useState<{ id: string; text: string } | null>(null);
+  const [err, setErr] = useState('');
+  const can = perm !== 'VIEW';
+  const base = `/api/pages/${pageId}/comments`;
+
+  const load = useCallback(() => j(base).then(setList).catch((e) => setErr(msg(e))), [base]);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const run = async (fn: () => Promise<unknown>) => {
+    try { await fn(); setErr(''); await load(); } catch (e) { setErr(msg(e)); }
+  };
+  const item = (c: C, top: boolean) => (
+    <div key={c.id} className={`${top ? '' : 'ml-4 mt-2 border-l pl-3'} text-sm`}>
+      <div className="flex justify-between text-xs text-gray-500">
+        <span>{c.user.name} · {fmt(c.createdAt)}{c.resolved ? ' · resolved' : ''}</span>
+        {c.user.id === userId && <button className="text-red-600" onClick={() => run(() => j(`/api/comments/${c.id}`, 'DELETE'))}>Delete</button>}
+      </div>
+      <p className="whitespace-pre-wrap">{c.content}</p>
+      {top && can && (
+        <div className="flex gap-3 text-xs text-accent">
+          <button onClick={() => setReply({ id: c.id, text: '' })}>Reply</button>
+          <button onClick={() => run(() => j(`/api/comments/${c.id}`, 'PATCH', { resolved: !c.resolved }))}>{c.resolved ? 'Reopen' : 'Resolve'}</button>
+        </div>
+      )}
+      {c.replies?.map((r) => item(r, false))}
+      {reply?.id === c.id && (
+        <form className="mt-2 flex gap-2" onSubmit={(e) => { e.preventDefault(); run(() => j(base, 'POST', { content: reply.text, parentId: c.id })).then(() => setReply(null)); }}>
+          <input className="min-w-0 flex-1" autoFocus value={reply.text} onChange={(e) => setReply({ id: c.id, text: e.target.value })} placeholder="Reply…" required />
+          <button className="btn">Send</button>
+        </form>
+      )}
+    </div>
+  );
+  return (
+    <div className="space-y-3">
+      {can && (
+        <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); run(() => j(base, 'POST', { content: text })).then(() => setText('')); }}>
+          <input className="min-w-0 flex-1" value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a comment…" required />
+          <button className="btn">Post</button>
+        </form>
+      )}
+      {err && <p className="text-sm text-red-600">{err}</p>}
+      {list.length === 0 && <p className="text-sm text-gray-500">No comments yet.</p>}
+      {list.map((c) => item(c, true))}
+    </div>
+  );
+}
+
+/* ---------------- Version history ---------------- */
+type V = { id: string; label: string | null; createdAt: string; createdBy: { name: string } | null };
+
+export function Versions({ pageId, perm, doc }: { pageId: string; perm: Perm; doc: Y.Doc }) {
+  const [list, setList] = useState<V[]>([]);
+  const [sel, setSel] = useState<{ id: string; snap: Y.Doc; text: string } | null>(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const base = `/api/pages/${pageId}/versions`;
+  const load = useCallback(() => j(base).then(setList).catch((e) => setErr(msg(e))), [base]);
+  useEffect(() => { load(); }, [load]);
+
+  const save = async (label?: string) => { await j(base, 'POST', { label }); await load(); };
+  const wrap = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    try { await fn(); setErr(''); } catch (e) { setErr(msg(e)); }
+    setBusy(false);
+  };
+  const open = (id: string) => wrap(async () => {
+    const d = await j(`/api/versions/${id}`);
+    const snap = new Y.Doc();
+    Y.applyUpdate(snap, Uint8Array.from(atob(d.data), (c) => c.charCodeAt(0)));
+    const text = snap.getXmlFragment('default').toString()
+      .replace(/<\/(paragraph|heading|listItem|blockquote|codeBlock)>/g, '\n')
+      .replace(/<[^>]+>/g, '');
+    setSel({ id, snap, text });
+  });
+  // Restore = controlled CRDT edit of the live doc (needs EDIT; enforced by the collab server). Old state is kept as a version first.
+  const restore = () => wrap(async () => {
+    if (!sel || !confirm('Restore this version for all collaborators?')) return;
+    await save('Before restore');
+    const frag = doc.getXmlFragment('default');
+    doc.transact(() => {
+      frag.delete(0, frag.length);
+      frag.insert(0, sel.snap.getXmlFragment('default').toArray().map((n) => n.clone() as Y.XmlElement));
+    });
+    setSel(null);
+  });
+
+  return (
+    <div className="space-y-3 text-sm">
+      {perm === 'EDIT' && <button className="btn" disabled={busy} onClick={() => wrap(() => save())}>Save version</button>}
+      {err && <p className="text-red-600">{err}</p>}
+      {list.length === 0 && <p className="text-gray-500">No versions yet.</p>}
+      <ul className="divide-y">
+        {list.map((v) => (
+          <li key={v.id}>
+            <button className={`w-full py-2 text-left ${sel?.id === v.id ? 'font-semibold' : ''}`} onClick={() => open(v.id)}>
+              {v.label ?? 'Version'} <span className="block text-xs text-gray-500">{fmt(v.createdAt)} · {v.createdBy?.name ?? 'unknown'}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {sel && (
+        <div className="space-y-2 rounded border bg-gray-50 p-2">
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">{sel.text || '(empty)'}</pre>
+          {perm === 'EDIT' && <button className="btn" disabled={busy} onClick={restore}>Restore this version</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Sharing ---------------- */
+type Entry = { userId: string; name: string; email: string; permission: Perm };
+
+export function Share({ pageId }: { pageId: string }) {
+  const [d, setD] = useState<{ owner: { name: string; email: string }; entries: Entry[] } | null>(null);
+  const [email, setEmail] = useState('');
+  const [perm, setPerm] = useState<Perm>('VIEW');
+  const [err, setErr] = useState('');
+  const base = `/api/pages/${pageId}/permissions`;
+  const load = useCallback(() => j(base).then(setD).catch((e) => setErr(msg(e))), [base]);
+  useEffect(() => { load(); }, [load]);
+  const run = async (fn: () => Promise<unknown>) => {
+    try { await fn(); setErr(''); await load(); } catch (e) { setErr(msg(e)); }
+  };
+  const Sel = ({ v, on }: { v: Perm; on: (p: Perm) => void }) => (
+    <select value={v} onChange={(e) => on(e.target.value as Perm)}>
+      <option value="VIEW">View</option>
+      <option value="COMMENT">Comment</option>
+      <option value="EDIT">Edit</option>
+    </select>
+  );
+  return (
+    <div className="space-y-3 text-sm">
+      <form className="flex flex-wrap gap-2" onSubmit={(e) => { e.preventDefault(); run(() => j(base, 'PUT', { email, permission: perm })).then(() => setEmail('')); }}>
+        <input className="min-w-0 flex-1" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="User email" required />
+        <Sel v={perm} on={setPerm} />
+        <button className="btn">Share</button>
+      </form>
+      {err && <p className="text-red-600">{err}</p>}
+      {d && (
+        <ul className="divide-y">
+          <li className="py-2">{d.owner.name} <span className="text-xs text-gray-500">{d.owner.email} · owner (full access)</span></li>
+          {d.entries.map((e) => (
+            <li key={e.userId} className="flex items-center justify-between gap-2 py-2">
+              <span className="min-w-0 truncate">{e.name}<span className="block text-xs text-gray-500">{e.email}</span></span>
+              <span className="flex items-center gap-2">
+                <Sel v={e.permission} on={(p) => run(() => j(base, 'PUT', { email: e.email, permission: p }))} />
+                <button className="text-red-600" onClick={() => run(() => j(`${base}?userId=${e.userId}`, 'DELETE'))}>Revoke</button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="text-xs text-gray-500">Workspace members have Edit access by default; adding a row here overrides it for that user.</p>
+    </div>
+  );
+}
+
+
+=== lib\api.ts ===
+import { NextResponse } from 'next/server';
+import type { z } from 'zod';
+import { getUser } from './auth';
+import { canManage, getPerm, rank, type Perm } from './permissions';
+
+export const fail = (error: string, status = 400) => NextResponse.json({ error }, { status });
+
+export async function parse<T>(req: Request, s: z.ZodType<T, z.ZodTypeDef, unknown>): Promise<T | null> {
+  const r = s.safeParse(await req.json().catch(() => null));
+  return r.success ? r.data : null;
+}
+
+/** Server-side page authorization. Returns {user, perm} or {res} to return immediately. */
+export async function gate(pageId: string, min: Perm, manage = false) {
+  const user = await getUser();
+  if (!user) return { res: fail('Unauthorized', 401) };
+  const perm = await getPerm(user.id, pageId);
+  if (!perm) return { res: fail('Not found', 404) };
+  if (rank[perm] < rank[min] || (manage && !(await canManage(user.id, pageId)))) return { res: fail('Forbidden', 403) };
+  return { user, perm };
+}
+
+// Simple in-memory sliding-window limiter (per process).
+const hits = new Map<string, number[]>();
+export function limited(req: Request, key: string, max = 10, windowMs = 60_000) {
+  const k = key + (req.headers.get('x-forwarded-for')?.split(',')[0] ?? 'local');
+  const now = Date.now();
+  const a = (hits.get(k) ?? []).filter((t) => now - t < windowMs);
+  a.push(now);
+  hits.set(k, a);
+  return a.length > max;
+}
+
+
+=== lib\auth.ts ===
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
+import { prisma } from './prisma';
+import { COOKIE, signSession, verifySession } from './session';
+
+export async function startSession(userId: string) {
+  cookies().set(COOKIE, await signSession(userId), {
+    httpOnly: true, sameSite: 'lax', path: '/', maxAge: 60 * 60 * 24 * 7,
+    secure: process.env.NODE_ENV === 'production',
+    domain: process.env.COOKIE_DOMAIN || undefined,
+  });
+}
+export async function getUser() {
+  const uid = await verifySession(cookies().get(COOKIE)?.value);
+  return uid ? prisma.user.findUnique({ where: { id: uid }, select: { id: true, name: true, email: true } }) : null;
+}
+export async function requireUser() {
+  const u = await getUser();
+  if (!u) redirect('/login');
+  return u;
+}
+
+
+=== lib\permissions.ts ===
+import { prisma } from './prisma';
+export type Perm = 'VIEW' | 'COMMENT' | 'EDIT';
+export const rank: Record<Perm, number> = { VIEW: 1, COMMENT: 2, EDIT: 3 };
+
+/** Effective page permission. Explicit PagePermission overrides; workspace owner/member default to EDIT. */
+export async function getPerm(userId: string, pageId: string): Promise<Perm | null> {
+  const page = await prisma.page.findUnique({ where: { id: pageId }, select: { workspaceId: true, workspace: { select: { ownerId: true } } } });
+  if (!page) return null;
+  if (page.workspace.ownerId === userId) return 'EDIT';
+  const pp = await prisma.pagePermission.findUnique({ where: { pageId_userId: { pageId, userId } } });
+  if (pp) return pp.permission;
+  const m = await prisma.workspaceMember.findUnique({ where: { workspaceId_userId: { workspaceId: page.workspaceId, userId } } });
+  return m ? 'EDIT' : null;
+}
+export async function canManage(userId: string, pageId: string) {
+  const p = await prisma.page.findUnique({ where: { id: pageId }, select: { createdBy: true, workspace: { select: { ownerId: true } } } });
+  return !!p && (p.createdBy === userId || p.workspace.ownerId === userId);
+}
+
+
+=== lib\prisma.ts ===
+import { PrismaClient } from '@prisma/client';
+const g = globalThis as unknown as { prisma?: PrismaClient };
+export const prisma = g.prisma ?? new PrismaClient();
+if (process.env.NODE_ENV !== 'production') g.prisma = prisma;
+
+
+=== lib\session.ts ===
+// Framework-agnostic: used by Next.js and the collaboration server.
+import { SignJWT, jwtVerify } from 'jose';
+export const COOKIE = 'session';
+const key = () => new TextEncoder().encode(process.env.AUTH_SECRET);
+export const signSession = (uid: string) =>
+  new SignJWT({}).setProtectedHeader({ alg: 'HS256' }).setSubject(uid).setExpirationTime('7d').sign(key());
+export async function verifySession(token?: string): Promise<string | null> {
+  if (!token) return null;
+  try { return (await jwtVerify(token, key())).payload.sub ?? null; } catch { return null; }
+}
+
+
+=== prisma\schema.prisma ===
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  MEMBER
+}
+
+enum Permission {
+  VIEW
+  COMMENT
+  EDIT
+}
+
+model User {
+  id           String            @id @default(cuid())
+  name         String
+  email        String            @unique
+  passwordHash String
+  createdAt    DateTime          @default(now())
+  owned        Workspace[]
+  memberships  WorkspaceMember[]
+  permissions  PagePermission[]
+  comments     Comment[]
+  versions     DocumentVersion[]
+}
+
+model Workspace {
+  id        String            @id @default(cuid())
+  name      String
+  ownerId   String
+  owner     User              @relation(fields: [ownerId], references: [id])
+  createdAt DateTime          @default(now())
+  members   WorkspaceMember[]
+  pages     Page[]
+
+  @@index([ownerId])
+}
+
+model WorkspaceMember {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        Role      @default(MEMBER)
+  joinedAt    DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Page {
+  id          String            @id @default(cuid())
+  workspaceId String
+  title       String            @default("Untitled")
+  createdBy   String
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  permissions PagePermission[]
+  comments    Comment[]
+  versions    DocumentVersion[]
+  updates     DocumentUpdate[]
+
+  @@index([workspaceId, updatedAt])
+}
+
+model PagePermission {
+  id         String     @id @default(cuid())
+  pageId     String
+  userId     String
+  permission Permission
+  page       Page       @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([pageId, userId])
+  @@index([userId])
+}
+
+model Comment {
+  id        String    @id @default(cuid())
+  pageId    String
+  userId    String
+  parentId  String?
+  content   String
+  resolved  Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  page      Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent    Comment?  @relation("Replies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   Comment[] @relation("Replies")
+
+  @@index([pageId, createdAt])
+}
+
+model DocumentVersion {
+  id          String   @id @default(cuid())
+  pageId      String
+  createdById String?
+  label       String?
+  data        Bytes
+  createdAt   DateTime @default(now())
+  page        Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  createdBy   User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([pageId, createdAt])
+}
+
+model DocumentUpdate {
+  id        Int      @id @default(autoincrement())
+  pageId    String
+  data      Bytes
+  createdAt DateTime @default(now())
+  page      Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId, id])
+}
+
+
+=== tests\e2e.ts ===
+/**
+ * Needs running: docker compose up -d, `npm run dev`, and two collab instances (:1234 and :1235).
+ * Covers T05-T08, T11, T14, T17, T18 (cross-instance sync, view-only enforcement, unauthenticated rejection, persistence).
+ */
+import assert from 'node:assert/strict';
+import WebSocket from 'ws';
+import * as Y from 'yjs';
+import { WebsocketProvider } from 'y-websocket';
+
+const APP = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+const INST_A = 'ws://localhost:1234';
+const INST_B = 'ws://localhost:1235';
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function until(f: () => boolean, ms = 8000) {
+  const t = Date.now();
+  while (!f()) { if (Date.now() - t > ms) throw new Error('timeout'); await sleep(50); }
+}
+async function api(cookie: string, path: string, method = 'GET', body?: unknown) {
+  const r = await fetch(APP + path, { method, headers: { 'Content-Type': 'application/json', cookie }, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  assert.ok(r.ok, `${method} ${path} -> ${r.status} ${JSON.stringify(j)}`);
+  return j;
+}
+async function user(name: string) {
+  const email = `${name}${Date.now()}@test.io`;
+  const r = await fetch(APP + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email, password: 'password123' }) });
+  assert.ok(r.ok, 'register failed');
+  return { email, cookie: r.headers.get('set-cookie')!.split(';')[0] };
+}
+function client(url: string, room: string, cookie?: string) {
+  class WS extends WebSocket {
+    constructor(u: string) { super(u, [], { headers: cookie ? { cookie } : {}, origin: APP }); }
+  }
+  const doc = new Y.Doc();
+  const provider = new WebsocketProvider(url, room, doc, { WebSocketPolyfill: WS as never });
+  return { doc, provider, text: doc.getText('t') };
+}
+
+async function main() {
+  const alice = await user('alice'), bob = await user('bob'), carl = await user('carl');
+  const ws = await api(alice.cookie, '/api/workspaces', 'POST', { name: 'T' });
+  await api(alice.cookie, `/api/workspaces/${ws.id}/members`, 'POST', { email: bob.email });
+  const page = await api(alice.cookie, `/api/workspaces/${ws.id}/pages`, 'POST', { title: 'P' });
+  await api(alice.cookie, `/api/pages/${page.id}/permissions`, 'PUT', { email: carl.email, permission: 'VIEW' });
+
+  const a = client(INST_A, page.id, alice.cookie);
+  const b = client(INST_B, page.id, bob.cookie); // different instance
+  const c = client(INST_A, page.id, carl.cookie); // view-only
+  const anon = client(INST_A, page.id);
+  await until(() => a.provider.synced && b.provider.synced && c.provider.synced);
+
+  a.text.insert(0, 'Hello ');
+  b.text.insert(0, 'World ');
+  await sleep(1500);
+  const merged = a.text.toString();
+  assert.equal(b.text.toString(), merged, 'T08/T18: instances converge');
+  assert.ok(merged.includes('Hello') && merged.includes('World'), 'T07: both edits kept');
+  assert.equal(c.text.toString(), merged, 'T16: viewer receives updates');
+
+  c.text.insert(0, 'HACK');
+  await sleep(1000);
+  assert.ok(!a.text.toString().includes('HACK') && !b.text.toString().includes('HACK'), 'T14: view-only write rejected');
+  assert.ok(!anon.provider.synced, 'T17: unauthenticated connection rejected');
+
+  const d = client(INST_A, page.id, alice.cookie);
+  await until(() => d.provider.synced);
+  assert.equal(d.text.toString(), merged, 'T11: persisted content loaded');
+  console.log('PASS');
+  [a, b, c, anon, d].forEach((x) => { x.provider.destroy(); x.doc.destroy(); });
+  process.exit(0);
+}
+main().catch((e) => { console.error('FAIL', e); process.exit(1); });
+
+
+=== docker-compose.yml ===
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_USER: collab, POSTGRES_PASSWORD: collab, POSTGRES_DB: collabspace }
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+volumes:
+  pgdata: {}
+
+
+=== next-env.d.ts ===
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/app/building-your-application/configuring/typescript for more information.
+
+
+=== next.config.mjs ===
+export default { reactStrictMode: true };
+
+
+=== package.json ===
+{
+  "name": "collabspace",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "collab": "tsx --env-file=.env collaboration-server/server.ts",
+    "test:e2e": "tsx --env-file=.env tests/e2e.ts",
+    "postinstall": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "@tiptap/extension-collaboration": "^2.10.3",
+    "@tiptap/extension-collaboration-cursor": "^2.10.3",
+    "@tiptap/extension-link": "^2.10.3",
+    "@tiptap/extension-underline": "^2.10.3",
+    "@tiptap/pm": "^2.10.3",
+    "@tiptap/react": "^2.10.3",
+    "@tiptap/starter-kit": "^2.10.3",
+    "bcryptjs": "^2.4.3",
+    "ioredis": "^5.4.1",
+    "jose": "^5.9.6",
+    "lib0": "^0.2.99",
+    "next": "^14.2.18",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "ws": "^8.18.0",
+    "y-prosemirror": "^1.2.12",
+    "y-protocols": "^1.0.6",
+    "y-websocket": "^2.0.4",
+    "yjs": "^13.6.20",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@types/ws": "^8.5.13",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "prisma": "^5.22.0",
+    "tailwindcss": "^3.4.15",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
+
+
+=== postcss.config.js ===
+module.exports = { plugins: { tailwindcss: {}, autoprefixer: {} } };
+
+
+=== tailwind.config.ts ===
+import type { Config } from 'tailwindcss';
+export default { content: ['./app/**/*.{ts,tsx}', './components/**/*.{ts,tsx}'], theme: { extend: {} }, plugins: [] } satisfies Config;
+
+
+=== tsconfig.json ===
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "paths": { "@/*": ["./*"] }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+
