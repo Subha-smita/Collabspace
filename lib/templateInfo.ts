@@ -1,3 +1,4 @@
+
 // Client-safe helpers that describe a template's content (used by the detail page and previews).
 import type { N, ShapeSeed } from './templates';
 

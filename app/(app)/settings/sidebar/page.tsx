@@ -1,3 +1,4 @@
+
 import { requireUser } from '@/lib/auth';
 import { getSettings } from '@/lib/settings';
 import { SidebarSections } from '@/components/SettingsUI';

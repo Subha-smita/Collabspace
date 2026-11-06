@@ -78,3 +78,4 @@ export default function AiChat({ enterNewLine = false }: { enterNewLine?: boolea
     </div>
   );
 }
+

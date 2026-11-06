@@ -1,3 +1,4 @@
+
 export function ago(d: Date | string | null | undefined): string {
   if (!d) return '—';
   const s = Math.max(0, Math.floor((Date.now() - new Date(d).getTime()) / 1000));

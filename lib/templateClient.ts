@@ -1,3 +1,4 @@
+
 // Browser helper: create a brand-new page from a template. Returns the URL to open, or an error message.
 export async function createFromTemplate(o: { workspaceId: string; tplRef: string; title: string; kind: 'DOC' | 'CANVAS'; icon?: string | null; canvasKey?: string }): Promise<{ href: string } | { error: string }> {
   if (!o.workspaceId) return { error: 'Create a workspace first.' };

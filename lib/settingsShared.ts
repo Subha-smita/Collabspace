@@ -1,3 +1,4 @@
+
 // Client-safe settings types/constants (no database imports).
 export const SECTION_KEYS = ['recents', 'favorites', 'workspaces', 'shared'] as const;
 export type SectionKey = (typeof SECTION_KEYS)[number];

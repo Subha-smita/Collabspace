@@ -12,7 +12,7 @@ import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import { prisma } from '../lib/prisma';
-import { COOKIE, verifySession } from '../lib/session';
+import { COOKIE, verifySession, verifyTicket } from '../lib/session';
 import { getPerm, type Perm } from '../lib/permissions';
 
 const PORT = Number(process.env.PORT ?? process.env.COLLABORATION_PORT ?? 1234);
@@ -178,7 +178,8 @@ if (req.headers.origin !== APP_ORIGIN) {
     const pageId = decodeURIComponent((req.url ?? '').split('?')[0].slice(1));
     if (!pageId || pageId.length > 64) return reject(400, 'Bad Request');
     const token = req.headers.cookie?.split(';').map((s) => s.trim().split('=')).find(([k]) => k === COOKIE)?.[1];
-    const uid = await verifySession(token);
+    const ticket = new URL(req.url ?? '/', 'http://x').searchParams.get('ticket');
+    const uid = (await verifySession(token)) ?? (await verifyTicket(ticket));
     if (!uid) return reject(401, 'Unauthorized');
     const perm = await getPerm(uid, pageId);
     if (!perm) return reject(403, 'Forbidden');

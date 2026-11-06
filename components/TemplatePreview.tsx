@@ -22,3 +22,5 @@ export default function TemplatePreview({ doc, shapes }: { doc?: N; shapes?: Sha
   }
   return doc ? <PublicDoc json={doc as never} /> : <p className="text-gray-500">No preview available.</p>;
 }
+
+

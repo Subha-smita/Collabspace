@@ -1,3 +1,4 @@
+
 /** Uploads an image from the user's computer to a page and returns its URL. Throws an Error with a readable message. */
 export async function uploadImage(pageId: string, file: File): Promise<string> {
   if (!file.type.startsWith('image/')) throw new Error('Choose an image file');

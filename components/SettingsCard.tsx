@@ -1,3 +1,4 @@
+
 import type { ReactNode } from 'react';
 
 /** A titled card used on every Settings page. `rows` lays children out as a divided list of settings. */

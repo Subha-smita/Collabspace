@@ -1,3 +1,4 @@
+
 import * as Y from 'yjs';
 import { prosemirrorJSONToYXmlFragment, yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
 import { getSchema, type JSONContent } from '@tiptap/core';

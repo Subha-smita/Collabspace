@@ -1,3 +1,4 @@
+
 import { requireUser } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import UpdatesList from '@/components/UpdatesList';

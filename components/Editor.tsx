@@ -37,11 +37,32 @@ export default function Editor(p: Props) {
   const [c, setC] = useState<{ doc: Y.Doc; provider: WebsocketProvider } | null>(null);
   useEffect(() => {
     const doc = new Y.Doc();
-    // Room name = page id. Auth: browser sends the httpOnly session cookie on the WS handshake.
-    const provider = new WebsocketProvider(p.collabUrl, p.pageId, doc);
-    setC({ doc, provider });
+    let off = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let provider: WebsocketProvider | undefined;
+    // Auth: the session cookie when the collab host receives it, otherwise a short-lived ticket in the URL (refreshed for reconnects).
+    const ticket = async () => {
+      try {
+        const r = await fetch('/api/collab-ticket');
+        return r.ok ? ((await r.json()).ticket as string) : null;
+      } catch {
+        return null;
+      }
+    };
+    (async () => {
+      const t = await ticket();
+      if (off) return;
+      provider = new WebsocketProvider(p.collabUrl, p.pageId, doc, { params: t ? { ticket: t } : {} });
+      setC({ doc, provider });
+      timer = setInterval(async () => {
+        const n = await ticket();
+       if (n && provider) (provider as unknown as { url: string }).url = `${provider.url.split('?')[0]}?ticket=${encodeURIComponent(n)}`;
+      }, 120_000);
+    })();
     return () => {
-      provider.destroy();
+      off = true;
+      if (timer) clearInterval(timer);
+      provider?.destroy();
       doc.destroy();
       setC(null);
     };
@@ -178,7 +199,7 @@ function Inner({ pageId, title, icon: initialIcon, cover: initialCover, fullWidt
     };
   }, [provider]);
 
-    useEffect(() => {
+  useEffect(() => {
     let t: ReturnType<typeof setTimeout> | undefined;
     const onUpdate = (_u: Uint8Array, origin: unknown) => {
       if (origin === provider) return; // update received from the server, not a local edit
@@ -188,7 +209,6 @@ function Inner({ pageId, title, icon: initialIcon, cover: initialCover, fullWidt
     };
     const onSync = (s: boolean) => { if (s) setSave('saved'); };
     doc.on('update', onUpdate);
-
     provider.on('sync', onSync);
     return () => {
       doc.off('update', onUpdate);
@@ -258,96 +278,98 @@ function Inner({ pageId, title, icon: initialIcon, cover: initialCover, fullWidt
 
   return (
     <div>
-    {coverPicker && !cover && <CoverPicker pageId={pageId} onPick={saveCover} onClose={() => setCoverPicker(false)} />}
-    {cover && <PageCover pageId={pageId} cover={cover} editable={editable} onChange={saveCover} />}
-    <div className={`mx-auto grid gap-10 px-6 py-8 ${layout.fullWidth ? 'max-w-none' : 'max-w-6xl'} ${layout.hidePanel ? '' : 'lg:grid-cols-[1fr_300px]'}`}>
-      <section className={`mx-auto w-full min-w-0 px-2 py-4 ${layout.fullWidth ? 'max-w-none' : 'max-w-3xl'} ${layout.smallText ? 'small-text' : ''}`}>
-        <div className={`relative ${cover && icon ? '-mt-12' : ''}`}>
-          {icon && (
-            <button type="button" disabled={!editable} onClick={() => setPicker(picker === 'icon' ? null : 'icon')} className="rounded-lg p-1 text-7xl leading-none hover:bg-[#ebeae6] disabled:hover:bg-transparent" aria-label="Page icon">
-              {icon}
-            </button>
-          )}
-          {editable && (
-            <div className="mb-1 flex flex-wrap items-center gap-1 text-sm text-gray-500 opacity-70 transition-opacity focus-within:opacity-100 hover:opacity-100">
-              {!icon && (
-                <button type="button" className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-[#ebeae6]" onClick={() => setPicker(picker === 'icon' ? null : 'icon')}>
-                  <Icon name="smile" />Add icon
-                </button>
-              )}
-              {!cover && (
-                <button type="button" className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-[#ebeae6]" onClick={() => setCoverPicker(true)}>
-                  <Icon name="image" />Add cover
-                </button>
-              )}
-              <div className="relative">
-                <button type="button" aria-expanded={layoutOpen} className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-[#ebeae6]" onClick={() => setLayoutOpen(!layoutOpen)}>
-                  <Icon name="layout" />Customize layout
-                </button>
-                {layoutOpen && <LayoutMenu layout={layout} onChange={setLayout} onClose={() => setLayoutOpen(false)} />}
+      {coverPicker && !cover && <CoverPicker pageId={pageId} onPick={saveCover} onClose={() => setCoverPicker(false)} />}
+      {cover && <PageCover pageId={pageId} cover={cover} editable={editable} onChange={saveCover} />}
+      <div className={`mx-auto grid gap-10 px-6 py-8 ${layout.fullWidth ? 'max-w-none' : 'max-w-6xl'} ${layout.hidePanel ? '' : 'lg:grid-cols-[1fr_300px]'}`}>
+        <section className={`mx-auto w-full min-w-0 px-2 py-4 ${layout.fullWidth ? 'max-w-none' : 'max-w-3xl'} ${layout.smallText ? 'small-text' : ''}`}>
+          <div className={`relative ${cover && icon ? '-mt-12' : ''}`}>
+            {icon && (
+              <button type="button" disabled={!editable} onClick={() => setPicker(picker === 'icon' ? null : 'icon')} className="rounded-lg p-1 text-7xl leading-none hover:bg-[#ebeae6] disabled:hover:bg-transparent" aria-label="Page icon">
+                {icon}
+              </button>
+            )}
+            {editable && (
+              <div className="mb-1 flex flex-wrap items-center gap-1 text-sm text-gray-500 opacity-70 transition-opacity focus-within:opacity-100 hover:opacity-100">
+                {!icon && (
+                  <button type="button" className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-[#ebeae6]" onClick={() => setPicker(picker === 'icon' ? null : 'icon')}>
+                    <Icon name="smile" />Add icon
+                  </button>
+                )}
+                {!cover && (
+                  <button type="button" className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-[#ebeae6]" onClick={() => setCoverPicker(true)}>
+                    <Icon name="image" />Add cover
+                  </button>
+                )}
+                <div className="relative">
+                  <button type="button" aria-expanded={layoutOpen} className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-[#ebeae6]" onClick={() => setLayoutOpen(!layoutOpen)}>
+                    <Icon name="layout" />Customize layout
+                  </button>
+                  {layoutOpen && <LayoutMenu layout={layout} onChange={setLayout} onClose={() => setLayoutOpen(false)} />}
+                </div>
               </div>
-            </div>
-          )}
-          {picker === 'icon' && <EmojiPicker onPick={saveIcon} onRemove={icon ? () => saveIcon(null) : undefined} onClose={() => setPicker(null)} />}
-        </div>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <input
-            className="w-full max-w-md border-0 bg-transparent px-0 text-4xl font-bold focus:outline-none"
-            value={name}
-            readOnly={!editable}
-            onChange={(e) => setName(e.target.value)}
-            onBlur={rename}
-            aria-label="Page title"
-          />
-          <div className="flex items-center gap-2">
-            <div className="flex -space-x-2">
-              {peers.map((p) => (
-                <span key={p.id} title={p.name} style={{ background: p.color }} className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white text-xs font-semibold text-white">
-                  {p.name.slice(0, 2).toUpperCase()}
+            )}
+            {picker === 'icon' && <EmojiPicker onPick={saveIcon} onRemove={icon ? () => saveIcon(null) : undefined} onClose={() => setPicker(null)} />}
+          </div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <input
+              className="w-full max-w-md border-0 bg-transparent px-0 text-4xl font-bold focus:outline-none"
+              value={name}
+              readOnly={!editable}
+              onChange={(e) => setName(e.target.value)}
+              onBlur={rename}
+              aria-label="Page title"
+            />
+            <div className="flex items-center gap-2">
+              <div className="flex -space-x-2">
+                {peers.map((p) => (
+                  <span key={p.id} title={p.name} style={{ background: p.color }} className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white text-xs font-semibold text-white">
+                    {p.name.slice(0, 2).toUpperCase()}
+                  </span>
+                ))}
+              </div>
+              <span className={`rounded px-2 py-0.5 text-xs ${live ? (synced ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800') : 'bg-red-100 text-red-800'}`}>
+                {live ? (synced ? 'Live' : 'Syncing…') : 'Offline – retrying'}
+              </span>
+              {editable && (
+                <span role="status" aria-live="polite" className="text-xs text-gray-600">
+                  {!live ? 'Changes sync when you reconnect' : save === 'saving' ? 'Saving…' : 'Saved'}
                 </span>
+              )}
+            </div>
+          </div>
+          {editable ? (
+            <div className="relative">
+              {editor && <EditorToolbar editor={editor} uploading={uploading} onUploadImage={() => fileRef.current?.click()} onLink={setLink} emojiOpen={picker === 'text'} onEmoji={() => setPicker(picker === 'text' ? null : 'text')} />}
+              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="hidden" onChange={onPickImage} aria-label="Upload image from your computer" />
+              {picker === 'text' && <div className="absolute left-0 top-full z-40"><EmojiPicker onPick={(e) => { editor?.chain().focus().insertContent(e).run(); setPicker(null); }} onClose={() => setPicker(null)} /></div>}
+            </div>
+          ) : (
+            <p className="mb-3 rounded bg-gray-100 px-3 py-1 text-sm text-gray-600">You have {perm.toLowerCase()} access — editing is disabled.</p>
+          )}
+          <EditorContent editor={editor} />
+          {slash && (
+            <SlashMenu
+              items={items}
+              index={Math.min(slash.index, Math.max(items.length - 1, 0))}
+              style={{ left: slash.left, top: slash.top, bottom: slash.bottom }}
+              onPick={(i) => pickRef.current(i)}
+              onHover={(i) => setSlash((c) => c && { ...c, index: i })}
+            />
+          )}
+        </section>
+
+        {!layout.hidePanel && (
+          <aside className="rounded border border-[#e9e9e7] bg-white p-4 lg:self-start">
+            <div className="mb-3 flex gap-3 border-b pb-2 text-sm">
+              {tabs.map((t) => (
+                <button key={t} onClick={() => setTab(t)} className={`capitalize ${tab === t ? 'font-semibold underline' : 'text-gray-600'}`}>{t}</button>
               ))}
             </div>
-            <span className={`rounded px-2 py-0.5 text-xs ${live ? (synced ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800') : 'bg-red-100 text-red-800'}`}>
-              {live ? (synced ? 'Live' : 'Syncing…') : 'Offline – retrying'}
-                          {editable && (
-              <span role="status" aria-live="polite" className="text-xs text-gray-600">
-                {!live ? 'Changes sync when you reconnect' : save === 'saving' ? 'Saving…' : 'Saved'}
-              </span>
-            )}
-            </span>
-          </div>
-        </div>
-        {editable ? (
-          <div className="relative">
-            {editor && <EditorToolbar editor={editor} uploading={uploading} onUploadImage={() => fileRef.current?.click()} onLink={setLink} emojiOpen={picker === 'text'} onEmoji={() => setPicker(picker === 'text' ? null : 'text')} />}
-            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="hidden" onChange={onPickImage} aria-label="Upload image from your computer" />
-            {picker === 'text' && <div className="absolute left-0 top-full z-40"><EmojiPicker onPick={(e) => { editor?.chain().focus().insertContent(e).run(); setPicker(null); }} onClose={() => setPicker(null)} /></div>}
-          </div>
-        ) : (
-          <p className="mb-3 rounded bg-gray-100 px-3 py-1 text-sm text-gray-600">You have {perm.toLowerCase()} access — editing is disabled.</p>
+            {tab === 'comments' && <Comments pageId={pageId} perm={perm} userId={user.id} />}
+            {tab === 'history' && <Versions pageId={pageId} perm={perm} doc={doc} />}
+          </aside>
         )}
-        <EditorContent editor={editor} />
-        {slash && (
-          <SlashMenu
-            items={items}
-            index={Math.min(slash.index, Math.max(items.length - 1, 0))}
-            style={{ left: slash.left, top: slash.top, bottom: slash.bottom }}
-            onPick={(i) => pickRef.current(i)}
-            onHover={(i) => setSlash((c) => c && { ...c, index: i })}
-          />
-        )}
-      </section>
-
-      {!layout.hidePanel && <aside className="rounded border border-[#e9e9e7] bg-white p-4 lg:self-start">
-        <div className="mb-3 flex gap-3 border-b pb-2 text-sm">
-          {tabs.map((t) => (
-            <button key={t} onClick={() => setTab(t)} className={`capitalize ${tab === t ? 'font-semibold underline' : 'text-gray-600'}`}>{t}</button>
-          ))}
-        </div>
-        {tab === 'comments' && <Comments pageId={pageId} perm={perm} userId={user.id} />}
-        {tab === 'history' && <Versions pageId={pageId} perm={perm} doc={doc} />}
-      </aside>}
-    </div>
+      </div>
     </div>
   );
 }

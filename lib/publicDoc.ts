@@ -1,3 +1,4 @@
+
 import type { JSONContent } from '@tiptap/core';
 import { prisma } from './prisma';
 import { updatesToJson } from './docSchema';

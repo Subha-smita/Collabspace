@@ -1,3 +1,4 @@
+
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { COVER_PRESETS, COVER_RE, coverStyle, isPreset } from '@/lib/covers';
