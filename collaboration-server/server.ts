@@ -172,7 +172,9 @@ type Ctx = { uid: string; pageId: string; perm: Perm };
 server.on('upgrade', async (req, socket, head) => {
   const reject = (code: number, text: string) => { socket.write(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\n\r\n`); socket.destroy(); };
   try {
-    if (req.headers.origin !== APP_ORIGIN) return reject(403, 'Forbidden');
+if (req.headers.origin !== APP_ORIGIN) {
+  return reject(403, 'Forbidden');
+}
     const pageId = decodeURIComponent((req.url ?? '').split('?')[0].slice(1));
     if (!pageId || pageId.length > 64) return reject(400, 'Bad Request');
     const token = req.headers.cookie?.split(';').map((s) => s.trim().split('=')).find(([k]) => k === COOKIE)?.[1];
