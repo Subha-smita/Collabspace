@@ -172,15 +172,20 @@ type Ctx = { uid: string; pageId: string; perm: Perm };
 server.on('upgrade', async (req, socket, head) => {
   const reject = (code: number, text: string) => { socket.write(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\n\r\n`); socket.destroy(); };
   try {
-if (req.headers.origin !== APP_ORIGIN) {
-  return reject(403, 'Forbidden');
-}
-    const pageId = decodeURIComponent((req.url ?? '').split('?')[0].slice(1));
+    if (req.headers.origin !== APP_ORIGIN) {
+      console.warn('ws rejected: origin', req.headers.origin, 'expected', APP_ORIGIN);
+      return reject(403, 'Forbidden');
+    }
+    const url = new URL(req.url ?? '/', 'http://x');
+    const pageId = decodeURIComponent(url.pathname.slice(1));
     if (!pageId || pageId.length > 64) return reject(400, 'Bad Request');
-    const token = req.headers.cookie?.split(';').map((s) => s.trim().split('=')).find(([k]) => k === COOKIE)?.[1];
-    const ticket = new URL(req.url ?? '/', 'http://x').searchParams.get('ticket');
-    const uid = (await verifySession(token)) ?? (await verifyTicket(ticket));
-    if (!uid) return reject(401, 'Unauthorized');
+    const cookie = req.headers.cookie?.split(';').map((s) => s.trim().split('=')).find(([k]) => k === COOKIE)?.[1];
+    const ticket = url.searchParams.get('ticket');
+    const uid = (await verifySession(cookie)) ?? (await verifyTicket(ticket));
+    if (!uid) {
+      console.warn('ws rejected: 401', { hasCookie: !!cookie, hasTicket: !!ticket, secretSet: !!process.env.AUTH_SECRET });
+      return reject(401, 'Unauthorized');
+    }
     const perm = await getPerm(uid, pageId);
     if (!perm) return reject(403, 'Forbidden');
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, { uid, pageId, perm } satisfies Ctx));
