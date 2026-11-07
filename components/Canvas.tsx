@@ -32,17 +32,55 @@ const MIN = 24;
 
 export default function Canvas(p: Props) {
   const [c, setC] = useState<{ doc: Y.Doc; provider: WebsocketProvider } | null>(null);
+
   useEffect(() => {
     const doc = new Y.Doc();
-    const provider = new WebsocketProvider(p.collabUrl, p.pageId, doc);
-    setC({ doc, provider });
+    let off = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let provider: WebsocketProvider | undefined;
+
+    // Request a short-lived authentication ticket.
+    const ticket = async () => {
+      try {
+        const r = await fetch('/api/collab-ticket');
+        return r.ok ? ((await r.json()).ticket as string) : null;
+      } catch {
+        return null;
+      }
+    };
+
+    (async () => {
+      const t = await ticket();
+      if (off || !t) return;
+
+      provider = new WebsocketProvider(
+        p.collabUrl,
+        p.pageId,
+        doc,
+        { params: { ticket: t } }
+      );
+
+      setC({ doc, provider });
+
+      // Refresh ticket for future reconnections.
+      timer = setInterval(async () => {
+        const n = await ticket();
+        if (n && provider) provider.params = { ticket: n };
+      }, 120_000);
+    })();
+
     return () => {
-      provider.destroy();
+      off = true;
+      if (timer) clearInterval(timer);
+      provider?.destroy();
       doc.destroy();
       setC(null);
     };
   }, [p.collabUrl, p.pageId]);
-  return c ? <Board {...p} {...c} /> : <div className="p-8 text-gray-600">Loading canvas…</div>;
+
+  return c
+    ? <Board {...p} {...c} />
+    : <div className="p-8 text-gray-600">Loading canvas…</div>;
 }
 
 type Drag =

@@ -16,7 +16,7 @@ async function groq(key: string, messages: Msg): Promise<Result> {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
     body: JSON.stringify({
-      model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+      model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
       max_tokens: 1024,
       messages: [{ role: 'system', content: SYSTEM }, ...messages],
     }),
